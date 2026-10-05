@@ -217,6 +217,7 @@ function route() {
   else if (r === 'settings') viewSettings(view);
   else if (r === 'admin' && state.user.role === 'admin') viewAdmin(view);
   else { go('today'); return; }
+  $('#fab').classList.toggle('hidden', !(NAV.some((n) => n.id === r) || r.startsWith('list/')) || r === 'done');
   $('#main').scrollTop = 0;
   renderChrome(); renderDetail();
 }
