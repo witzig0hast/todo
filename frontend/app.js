@@ -31,6 +31,7 @@ function icon(name, cls) {
 }
 function h(tag, props, ...kids) {
   const el = document.createElement(tag);
+  if (props instanceof Node || typeof props !== 'object' || Array.isArray(props)) { kids.unshift(props); props = {}; }
   for (const [k, v] of Object.entries(props || {})) {
     if (v === null || v === undefined || v === false) continue;
     if (k === 'class') el.className = v;
@@ -194,9 +195,9 @@ const counts = () => ({
 function renderApp(root) {
   clear(root);
   root.appendChild(h('div', { class: 'app', id: 'app' },
-    h('nav', { class: 'side glass', id: 'side', 'aria-label': 'Navigation' }),
+    h('nav', { class: 'side', id: 'side', 'aria-label': 'Navigation' }),
     h('main', { class: 'main', id: 'main' }, h('div', { class: 'main-inner', id: 'view' })),
-    h('aside', { class: 'detail-pane glass', id: 'detail-pane', 'aria-label': 'Details' }),
+    h('aside', { class: 'detail-pane', id: 'detail-pane', 'aria-label': 'Details' }),
     h('nav', { class: 'tabbar', id: 'tabbar', 'aria-label': 'Hauptnavigation' }),
     h('button', { class: 'fab', id: 'fab', 'aria-label': 'Neue Aufgabe', onclick: () => { go('today'); setTimeout(() => { const i = $('#quick-input'); if (i) i.focus(); }, 50); } }, icon('plus'))));
   window.removeEventListener('hashchange', route); window.addEventListener('hashchange', route);
@@ -233,12 +234,12 @@ function renderChrome() {
   side.appendChild(h('div', { class: 'nav-title' }, 'Listen', h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Neue Liste', onclick: newList }, icon('plus'))));
   state.lists.forEach((l) => {
     const n = state.todos.filter((t) => open(t) && t.list_id === l.id).length;
-    side.appendChild(h('button', { class: 'nav-item' + (state.route === 'list/' + l.id ? ' on' : ''), onclick: () => go('list/' + l.id) }, h('span', { class: 'dot', vars: { '--c': l.color } }), h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis' }, l.name), h('span', { class: 'count' }, n || '')));
+    side.appendChild(h('button', { class: 'nav-item' + (state.route === 'list/' + l.id ? ' on' : ''), onclick: () => go('list/' + l.id) }, icon('list'), h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis' }, l.name), h('span', { class: 'count' }, n || '')));
   });
   side.appendChild(h('div', { class: 'nav-sep' }));
-  side.appendChild(item('bus', 'Agent Bus', 'bus', state.unread ? h('span', { class: 'count chip danger' }, state.unread) : null));
+  side.appendChild(item('bus', 'Agent Bus', 'bus', state.unread ? h('span', { class: 'count chip solid' }, state.unread) : null));
   side.appendChild(item('assistant', 'Assistent', 'bot'));
-  if (state.user.role === 'admin') side.appendChild(item('admin', 'Admin', 'shield', state.pendingUsers ? h('span', { class: 'count chip warn' }, state.pendingUsers) : null));
+  if (state.user.role === 'admin') side.appendChild(item('admin', 'Admin', 'shield', state.pendingUsers ? h('span', { class: 'count chip solid' }, state.pendingUsers) : null));
   side.appendChild(h('div', { class: 'grow' }));
   side.appendChild(item('settings', 'Einstellungen', 'gear'));
   side.appendChild(h('div', { class: 'muted small', style: 'padding:6px 12px' }, `${state.user.username} · ${state.user.role === 'admin' ? 'Admin' : 'Benutzer'}`));
@@ -359,14 +360,25 @@ function renderTodos() {
     }
   }
   if (!items.length) {
-    box.appendChild(h('div', { class: 'empty' }, icon(r === 'done' ? 'done' : 'check'), h('div', {}, r === 'done' ? 'Noch nichts erledigt.' : r === 'today' ? 'Alles erledigt – genieß den Tag! 🎉' : 'Keine Aufgaben hier.')));
+    box.appendChild(h('div', { class: 'empty' }, icon(r === 'done' ? 'done' : 'check'), h('div', {}, r === 'done' ? 'Noch nichts erledigt.' : r === 'today' ? 'Alles erledigt.' : 'Keine Aufgaben hier.')));
     return;
   }
   const grouped = r === 'upcoming' || r === 'today';
-  let last = null;
+  const groupName = (t) => {
+    if (!grouped || !t.due_at) return null;
+    const d = new Date(t.due_at);
+    if (d < dayStart(new Date())) return 'Überfällig';
+    return fmtDue(t.due_at).replace(/ \d\d:\d\d$/, '');
+  };
+  let last, rows;
   items.forEach((t) => {
-    if (grouped && t.due_at) { const g = fmtDue(t.due_at).split(' ')[0] === 'Heute' && new Date(t.due_at) > new Date() ? 'Heute' : new Date(t.due_at) < dayStart(new Date()) ? 'Überfällig' : fmtDue(t.due_at).replace(/ \d\d:\d\d$/, ''); if (g !== last) { box.appendChild(h('div', { class: 'group-title' }, g)); last = g; } }
-    box.appendChild(todoRow(t));
+    const g = groupName(t);
+    if (!rows || g !== last) {
+      rows = h('div', { class: 'rows glass' });
+      box.appendChild(h('section', { class: 'group' }, g ? h('div', { class: 'group-title' }, g) : null, rows));
+      last = g;
+    }
+    rows.appendChild(todoRow(t));
   });
 }
 
@@ -374,16 +386,16 @@ function todoRow(t) {
   const subs = state.todos.filter((s) => s.parent_id === t.id);
   const list = state.lists.find((l) => l.id === t.list_id);
   const overdue = !t.done && t.due_at && new Date(t.due_at) < new Date();
-  const row = h('div', { class: 'todo glass' + (t.done ? ' done' : '') + (state.selected === t.id ? ' sel' : ''), 'data-id': t.id },
+  const row = h('div', { class: 'todo' + (t.done ? ' done' : '') + (state.selected === t.id ? ' sel' : ''), 'data-id': t.id },
     h('button', { class: 'check p' + t.priority, type: 'button', role: 'checkbox', 'aria-checked': String(t.done), 'aria-label': t.done ? 'Als offen markieren' : 'Erledigen', onclick: (e) => { e.stopPropagation(); toggleDone(t); } }, icon('check')),
     h('div', { class: 't-body', onclick: () => select(t.id) },
       h('div', { class: 't-title' }, t.title),
       h('div', { class: 't-meta' },
         t.due_at ? h('span', { class: 'chip' + (overdue ? ' danger' : '') }, icon('clock'), fmtDue(t.due_at)) : null,
-        list ? h('span', { class: 'chip' }, h('span', { class: 'dot', vars: { '--c': list.color }, style: 'width:7px;height:7px' }), list.name) : null,
+        list ? h('span', { class: 'chip' }, list.name) : null,
         subs.length ? h('span', { class: 'chip' }, `${subs.filter((s) => s.done).length}/${subs.length}`) : null,
-        t.priority === 3 ? h('span', { class: 'chip danger' }, icon('flag'), 'Hoch') : null,
-        t.created_by !== 'user' ? h('span', { class: 'chip ok' }, icon('bus'), t.created_by) : null)));
+        t.priority > 0 ? h('span', { class: 'chip' + (t.priority === 3 ? ' danger' : '') }, icon('flag'), ['', 'Niedrig', 'Mittel', 'Hoch'][t.priority]) : null,
+        t.created_by !== 'user' ? h('span', { class: 'chip' }, icon('bus'), t.created_by) : null)));
   const wrap = h('div', { class: 'todo-wrap' },
     h('div', { class: 'swipe-bg' }, h('span', { class: 'l' }, icon('check')), h('span', { class: 'r' }, icon('trash'))), row);
   attachSwipe(row, t);
@@ -523,7 +535,7 @@ function viewBus(view) {
   view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Agent Bus'), h('div', { class: 'muted small' }, 'Nachrichten & Aufgaben zwischen deinen Projekten und Todo')),
     btn('Agent', 'sm primary', newAgentSheet, 'plus')));
   view.appendChild(h('div', { id: 'agents', class: 'col' }));
-  view.appendChild(h('details', { class: 'glass card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'So verbindest du ein Projekt'),
+  view.appendChild(h('details', { class: 'glass card' }, h('summary', {}, 'So verbindest du ein Projekt'),
     h('div', { class: 'col', style: 'margin-top:12px' }, h('p', { class: 'muted small' }, 'Jeder Agent hat einen eigenen Key (Header X-Agent-Key). Beispiele:'),
       h('pre', { class: 'code' }, apiExamples()))));
   view.appendChild(sendForm());
@@ -557,7 +569,7 @@ const refreshAgents = guard(async () => {
   state.agents = (await api('/agent-bus/agents')).agents;
   const box = $('#agents'); if (!box) return; clear(box);
   if (!state.agents.length) box.appendChild(h('div', { class: 'empty glass' }, icon('bus'), h('div', {}, 'Noch keine Agents. Lege einen an, um ein Projekt anzubinden.')));
-  state.agents.forEach((a) => box.appendChild(h('div', { class: 'glass card col', style: 'gap:8px' },
+  state.agents.forEach((a) => box.appendChild(h('div', { class: 'glass card col', style: 'gap:10px' },
     h('div', { class: 'row' }, h('div', { class: 'avatar' }, a.name[0]), h('div', { class: 'grow' }, h('h3', {}, a.name), h('div', { class: 'muted small' }, a.description || 'Keine Beschreibung')),
       h('button', { class: 'icon-btn', 'aria-label': 'Neuen Key erzeugen', title: 'Key rotieren', onclick: guard(async () => { if (!confirm('Neuen Key erzeugen? Der alte wird sofort ungültig.')) return; keySheet(a.name, (await api(`/agent-bus/agents/${a.id}/rotate`, { method: 'POST' })).api_key); }) }, icon('key')),
       h('button', { class: 'icon-btn', 'aria-label': 'Agent löschen', onclick: guard(async () => { if (!confirm(`Agent „${a.name}“ löschen?`)) return; await api('/agent-bus/agents/' + a.id, { method: 'DELETE' }); refreshAgents(); }) }, icon('trash'))),
@@ -605,7 +617,7 @@ function sendForm() {
   const seg = h('div', { class: 'seg' });
   const draw = () => { clear(seg); [['text', 'Text'], ['task', 'Task']].forEach(([k, l]) => seg.appendChild(h('button', { type: 'button', class: kind === k ? 'on' : '', onclick: () => { kind = k; draw(); content.classList.toggle('hidden', k === 'task'); taskBox.classList.toggle('hidden', k === 'text'); } }, l))); };
   draw();
-  return h('details', { class: 'glass card' }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Nachricht an einen Agent senden'),
+  return h('details', { class: 'glass card' }, h('summary', {}, 'Nachricht an einen Agent senden'),
     h('form', { class: 'col', style: 'margin-top:12px', onsubmit: guard(async (e) => {
       e.preventDefault();
       if (!to.value) { toast('Zuerst einen Agent anlegen.', 'err'); return; }
@@ -629,7 +641,7 @@ function renderLog() {
     const incoming = m.to_label === 'todo';
     const stCls = m.status === 'completed' ? 'ok' : m.status === 'failed' ? 'danger' : m.status === 'sent' ? '' : 'warn';
     box.appendChild(h('div', { class: 'glass msg ' + (incoming ? 'in' : 'out') },
-      h('div', { class: 'row wrap' }, h('strong', {}, `${m.from_label} → ${m.to_label}`), h('span', { class: 'chip' }, m.kind === 'task' ? 'Task: ' + m.task_type : 'Text'), h('span', { class: 'chip ' + stCls }, m.status), h('span', { class: 'muted small grow', style: 'text-align:right' }, fmtTs(m.created_at))),
+      h('div', { class: 'row wrap' }, h('strong', {}, `${m.from_label} → ${m.to_label}`), h('span', { class: 'chip' }, m.kind === 'task' ? 'Task: ' + m.task_type : 'Text'), h('span', { class: 'chip dotted ' + stCls }, m.status), h('span', { class: 'muted small grow', style: 'text-align:right' }, fmtTs(m.created_at))),
       m.content ? h('div', {}, m.content) : null,
       m.payload ? h('pre', {}, JSON.stringify(m.payload, null, 2)) : null,
       m.result ? h('pre', {}, '→ ' + JSON.stringify(m.result, null, 2)) : null,
@@ -709,7 +721,7 @@ function viewAdmin(view) {
   view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Administration'), h('div', { class: 'muted small' }, 'Benutzer freigeben und verwalten'))));
   const users = h('div', { class: 'col' }), audit = h('div', { class: 'col', style: 'gap:4px' });
   view.appendChild(users);
-  view.appendChild(h('details', { class: 'glass card', ontoggle: (e) => e.target.open && loadAudit() }, h('summary', { style: 'cursor:pointer;font-weight:600' }, 'Protokoll (letzte 200 Einträge)'), h('div', { style: 'margin-top:10px' }, audit)));
+  view.appendChild(h('details', { class: 'glass card', ontoggle: (e) => e.target.open && loadAudit() }, h('summary', {}, 'Protokoll (letzte 200 Einträge)'), h('div', { style: 'margin-top:10px' }, audit)));
   const act = (u, a, label, cls, ic) => btn(label, 'sm ' + (cls || ''), guard(async () => { if (a === 'delete') { if (!confirm(`„${u.username}“ samt allen Daten löschen?`)) return; await api('/admin/users/' + u.id, { method: 'DELETE' }); } else await api(`/admin/users/${u.id}/${a}`, { method: 'POST' }); await loadUsers(); }), ic);
   const loadUsers = guard(async () => {
     const list = (await api('/admin/users')).users; clear(users);
@@ -724,7 +736,7 @@ function viewAdmin(view) {
             u.status === 'approved' ? act(u, u.role === 'admin' ? 'demote' : 'promote', u.role === 'admin' ? 'Zum Benutzer' : 'Zum Admin') : null, act(u, 'delete', '', 'danger', 'trash')];
       users.appendChild(h('div', { class: 'glass user-row' }, h('div', { class: 'avatar' }, u.username[0]),
         h('div', { class: 'grow' }, h('strong', {}, u.username + (me ? ' (du)' : '')), h('div', { class: 'muted small' }, 'seit ' + fmtTs(u.created_at))),
-        h('span', { class: 'chip ' + (u.status === 'approved' ? 'ok' : u.status === 'pending' ? 'warn' : 'danger') }, ({ approved: 'aktiv', pending: 'wartet', rejected: 'abgelehnt', blocked: 'gesperrt' })[u.status]),
+        h('span', { class: 'chip dotted ' + (u.status === 'approved' ? 'ok' : u.status === 'pending' ? 'warn' : 'danger') }, ({ approved: 'aktiv', pending: 'wartet', rejected: 'abgelehnt', blocked: 'gesperrt' })[u.status]),
         u.role === 'admin' ? h('span', { class: 'chip' }, 'Admin') : null, h('div', { class: 'row wrap' }, actions)));
     });
   });
