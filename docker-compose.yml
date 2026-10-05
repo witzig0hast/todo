@@ -1,0 +1,30 @@
+services:
+  todo:
+    build: .
+    image: todo-app:latest
+    container_name: todo
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # nginx liegt auf dem Host und erreicht den Container über das Docker-Gateway.
+      FORWARDED_ALLOW_IPS: "*"
+    ports:
+      # Nur lokal erreichbar – nach außen geht es ausschließlich über nginx (TLS).
+      - "127.0.0.1:${TODO_PORT:-8080}:8000"
+    volumes:
+      - todo-data:/data
+    # Zugriff auf Ollama/Whisper, die auf dem Host laufen.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Härtung
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 512m
+
+volumes:
+  todo-data:

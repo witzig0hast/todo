@@ -1,0 +1,94 @@
+# Todo
+
+Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Ollama-KI**, **Whisper-Spracheingabe**
+(Wyoming), **Agent Bus**, Web-Push und einer PWA-Oberfläche für Handy, Tablet und PC.
+
+## Funktionen
+
+- **Benutzer:** Der erste Benutzer wird automatisch **Admin**. Jede weitere Registrierung bleibt `pending`, bis ein
+  Admin sie freigibt (Admin-Bereich: freigeben, ablehnen, sperren, Rolle ändern, löschen, Protokoll).
+- **Aufgaben:** Listen, Prioritäten, Fälligkeit, Notizen, Unteraufgaben, Wisch-Gesten (rechts = erledigt, links = löschen),
+  Tastaturkürzel (`n` oder `/` = neue Aufgabe, `Esc` = Details schließen).
+- **Ollama:** Freitext → Aufgabe („morgen 15 Uhr Zahnarzt anrufen“), Aufgabe in Unteraufgaben zerlegen,
+  Tagesplan, Chat-Assistent (nur lesend – er kann nichts verändern). KI-Ergebnisse sind immer Vorschläge, die du bestätigst.
+  Das Modell ist pro Benutzer wählbar.
+- **Whisper:** Mikrofon-Button → Aufnahme wird im Browser in 16-kHz-WAV umgewandelt, das Backend spricht per
+  Wyoming-Protokoll mit deinem `wyoming-whisper` (Port 10300) → Text → KI-Vorschlag. Audio wird nie gespeichert.
+- **Agent Bus** (Konzept aus [ownai](https://github.com/witzig0hast/ownai)): pro Benutzer eigene Agents mit eigenem
+  API-Key (`X-Agent-Key`, nur als SHA-256-Hash gespeichert, rotierbar), Rechte pro Agent (`send`, `todos:read`,
+  `todos:write`), Text-Nachrichten und Tasks mit Status, Posteingang per Polling **oder Live-Stream (SSE)**,
+  vollständiges Log im UI. Nachrichten an `todo` lösen eine Push-Benachrichtigung aus. Eingebaute Task-Typen:
+  `todo.create`, `todo.list`, `todo.complete`.
+- **Push:** Fälligkeits-Erinnerungen, Agent-Nachrichten, neue Registrierungen (an Admins) – Web-Push mit VAPID
+  (Schlüssel werden beim ersten Start in `/data` erzeugt).
+- **PWA:** installierbar, App-Shell offline, Manifest + Icons (inkl. maskable). Hell/Dunkel automatisch.
+
+## Sicherheit
+
+argon2-Passwort-Hashes · Sitzungen als `HttpOnly`/`Secure`/`SameSite=Strict`-Cookie (nur Hash in der DB) ·
+CSRF-Token + Origin-Prüfung · Rate-Limits (Login pro Konto/IP mit Sperre, Registrierung, KI, Sprache) ·
+strikte CSP (kein Inline-Script/-Style), HSTS, `X-Frame-Options`, `nosniff` · jede Abfrage ist auf den Besitzer
+beschränkt · Größenlimits für Anfragen und Audio · Audit-Log · Container: Nicht-Root, `read_only`, `cap_drop: ALL`,
+`no-new-privileges`, nur an `127.0.0.1` gebunden.
+
+## Installation
+
+```bash
+cp .env.example .env        # anpassen (Modell, VAPID_SUBJECT, ...)
+docker compose up -d --build
+```
+
+Der Container lauscht nur auf `127.0.0.1:8080`. **TLS läuft über deinen nginx** – Beispiel: [`deploy/nginx.conf`](deploy/nginx.conf)
+(mit SSE-Einstellungen und langen Timeouts für die KI). Ohne HTTPS funktionieren Mikrofon, Push und Installation als App nicht.
+
+Danach `https://todo.example.com` öffnen und das erste Konto registrieren – das ist der Admin.
+
+### Ollama & Whisper auf dem Host
+
+Der Container erreicht den Host über `host.docker.internal`.
+
+- **Whisper:** dein `wyoming-whisper` ist auf `0.0.0.0:10300` veröffentlicht → funktioniert direkt.
+- **Ollama:** lauscht standardmäßig nur auf `127.0.0.1`. Damit der Container ihn erreicht, Ollama auf die Docker-Bridge binden
+  (z. B. `OLLAMA_HOST=172.17.0.1:11434` in der systemd-Unit) – und Port 11434 per Firewall nicht nach außen öffnen.
+  Alternativ `OLLAMA_URL` in `.env` anpassen. Modell laden: `ollama pull llama3.1:8b`.
+
+## Agent-Bus-Beispiele
+
+```bash
+# Todo anlegen (Agent braucht Scope todos:write)
+curl -X POST https://todo.example.com/api/agent-bus/agent/messages \
+  -H "X-Agent-Key: tdo_…" -H "Content-Type: application/json" \
+  -d '{"to":"todo","kind":"task","task_type":"todo.create","payload":{"title":"Backup prüfen"}}'
+
+# Nachricht an dich (mit Push)
+curl -X POST …/agent/messages -H "X-Agent-Key: tdo_…" -H "Content-Type: application/json" \
+  -d '{"to":"todo","kind":"text","content":"Deploy fertig"}'
+
+# Posteingang / Live-Stream / Ergebnis melden
+curl -H "X-Agent-Key: tdo_…" "…/api/agent-bus/inbox?after_id=0"
+curl -N -H "X-Agent-Key: tdo_…" …/api/agent-bus/inbox/stream
+curl -X POST …/api/agent-bus/messages/ID/result -H "X-Agent-Key: tdo_…" \
+  -H "Content-Type: application/json" -d '{"status":"completed","result":{"ok":true}}'
+```
+
+Agents können sich auch gegenseitig Nachrichten schicken (`"to":"<agent-name>"`, Scope `send`).
+
+## Später als APK
+
+Die Oberfläche ist eine vollwertige PWA (Manifest, Service Worker, maskable Icons, HTTPS, Web-Push). Zwei einfache Wege:
+
+1. **Bubblewrap / PWABuilder** (Trusted Web Activity): `bubblewrap init --manifest https://todo.example.com/manifest.webmanifest`
+   → `bubblewrap build` ergibt eine APK/AAB, Push bleibt Web-Push.
+2. **Capacitor:** `frontend/` ist reines HTML/CSS/JS ohne Build-Schritt; als `webDir` einbinden und die Server-URL
+   (`server.url`) auf deine Domain setzen. Alle API-Aufrufe sind relative `/api/...`-Pfade, d. h. nur die Basis-URL
+   muss bei einem lokal gebündelten Frontend zentral ergänzt werden (`api()` in `app.js`).
+
+## Entwicklung
+
+```bash
+cd backend && pip install -r requirements-dev.txt && python -m pytest
+DATA_DIR=./data COOKIE_SECURE=false FRONTEND_DIR=../frontend uvicorn app.main:app --reload
+```
+
+Struktur: `backend/app` (FastAPI + SQLite, ein Worker), `frontend/` (Vanilla-JS-PWA), `deploy/nginx.conf`.
+SQLite (WAL) liegt im Volume `/data`; Backup = Volume sichern.

@@ -1,0 +1,123 @@
+import re
+import sqlite3
+
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from pydantic import BaseModel, Field, field_validator
+
+from . import config, events, push
+from .db import audit, get_db, now, tx
+from .security import (SESSION_COOKIE, Auth, client_ip, create_session, enforce_rate, get_auth, hash_password,
+                       limiter, verify_password)
+
+router = APIRouter(prefix="/api/auth", tags=["auth"])
+_USERNAME = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
+
+
+class Credentials(BaseModel):
+    username: str = Field(max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def _strip(cls, v: str) -> str:
+        return v.strip()
+
+
+class RegisterIn(Credentials):
+    password: str = Field(min_length=10, max_length=256)
+
+    @field_validator("username")
+    @classmethod
+    def _valid(cls, v: str) -> str:
+        v = v.strip()
+        if not _USERNAME.match(v):
+            raise ValueError("Benutzername: 3-32 Zeichen (Buchstaben, Ziffern, _ . -).")
+        return v
+
+
+class PasswordChange(BaseModel):
+    current_password: str = Field(max_length=256)
+    new_password: str = Field(min_length=10, max_length=256)
+
+
+def _set_cookie(response: Response, token: str) -> None:
+    response.set_cookie(SESSION_COOKIE, token, max_age=config.SESSION_DAYS * 86400, httponly=True,
+                        secure=config.COOKIE_SECURE, samesite="strict", path="/")
+
+
+def user_public(u: sqlite3.Row) -> dict:
+    return {"id": u["id"], "username": u["username"], "role": u["role"], "status": u["status"]}
+
+
+@router.post("/register", status_code=201)
+def register(data: RegisterIn, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    ip = client_ip(request)
+    enforce_rate(f"register:{ip}", 5, 3600)
+    pw_hash = hash_password(data.password)
+    with tx(conn):
+        if conn.execute("SELECT 1 FROM users WHERE username = ?", (data.username,)).fetchone():
+            raise HTTPException(409, "Benutzername bereits vergeben.")
+        first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+        role, status = ("admin", "approved") if first else ("user", "pending")
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, role, status, created_at, approved_at) VALUES (?,?,?,?,?,?)",
+            (data.username, pw_hash, role, status, now(), now() if first else None),
+        )
+        user_id = cur.lastrowid
+        audit(conn, data.username, "register", f"role={role} status={status}", user_id, ip)
+    if first:
+        token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+        _set_cookie(response, token)
+        return {"status": "approved", "admin": True}
+    admins = [r["id"] for r in conn.execute("SELECT id FROM users WHERE role='admin' AND status='approved'")]
+    for a in admins:
+        events.publish("user", a, "admin", {"op": "pending_user", "username": data.username})
+    push.notify_threadsafe(admins, "Neue Registrierung", f"{data.username} wartet auf Freigabe.", "/#admin")
+    return {"status": "pending", "admin": False}
+
+
+@router.post("/login")
+def login(data: Credentials, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    ip = client_ip(request)
+    ukey = f"login-user:{data.username.lower()}"
+    ikey = f"login-ip:{ip}"
+    window, limit = config.LOGIN_WINDOW_SECONDS, config.LOGIN_MAX_FAILURES
+    if limiter.blocked(ukey, limit, window) or limiter.blocked(ikey, limit * 4, window):
+        raise HTTPException(429, "Zu viele Fehlversuche. Bitte später erneut versuchen.")
+    user = conn.execute("SELECT * FROM users WHERE username = ?", (data.username,)).fetchone()
+    if not verify_password(user["password_hash"] if user else None, data.password):
+        limiter.hit(ukey, window)
+        limiter.hit(ikey, window)
+        audit(conn, data.username, "login_failed", None, user["id"] if user else None, ip)
+        raise HTTPException(401, "Benutzername oder Passwort falsch.")
+    limiter.reset(ukey)
+    if user["status"] == "pending":
+        raise HTTPException(403, "Dein Konto wartet noch auf die Freigabe durch einen Administrator.")
+    if user["status"] != "approved":
+        raise HTTPException(403, "Dein Konto wurde abgelehnt oder gesperrt.")
+    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"))
+    audit(conn, user["username"], "login", None, user["id"], ip)
+    _set_cookie(response, token)
+    return {"user": user_public(user), "csrf": csrf}
+
+
+@router.post("/logout", status_code=204)
+def logout(response: Response, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("DELETE FROM sessions WHERE token_hash = ?", (auth.token_hash,))
+    response.delete_cookie(SESSION_COOKIE, path="/")
+
+
+@router.get("/me")
+def me(auth: Auth = Depends(get_auth)):
+    return {"user": user_public(auth.user), "csrf": auth.csrf}
+
+
+@router.post("/password", status_code=204)
+def change_password(data: PasswordChange, request: Request, auth: Auth = Depends(get_auth),
+                    conn: sqlite3.Connection = Depends(get_db)):
+    enforce_rate(f"pwchange:{auth.id}", 5, 900)
+    if not verify_password(auth.user["password_hash"], data.current_password):
+        raise HTTPException(403, "Aktuelles Passwort falsch.")
+    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(data.new_password), auth.id))
+    conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (auth.id, auth.token_hash))
+    audit(conn, auth.user["username"], "password_change", None, auth.id, client_ip(request))
