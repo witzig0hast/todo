@@ -181,3 +181,11 @@ def test_security_headers(client):
     r = client.get("/api/health")
     assert "default-src 'self'" in r.headers["content-security-policy"]
     assert r.headers["x-frame-options"] == "DENY"
+
+
+def test_frontend_is_always_revalidated(client):
+    for path in ("/", "/app.js", "/app.css", "/sw.js"):
+        r = client.get(path)
+        assert r.status_code == 200, path
+        assert r.headers["cache-control"] == "no-cache", path
+    assert client.get("/api/health").headers["cache-control"] == "no-store"

@@ -46,6 +46,8 @@ async def security_middleware(request: Request, call_next):
         h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.url.path.startswith("/api/"):
         h["Cache-Control"] = "no-store"
+    else:  # Oberfläche: Browser fragt bei jedem Aufruf per ETag nach (304 = fast gratis), damit Updates sofort ankommen
+        h["Cache-Control"] = "no-cache"
     return response
 
 
