@@ -88,6 +88,16 @@ Der Container lauscht nur auf `127.0.0.1:8080`. **TLS läuft über deinen nginx*
 
 Danach `https://todo.example.com` öffnen und das erste Konto registrieren – das ist der Admin.
 
+### Hinter Cloudflare
+
+Liegt die Domain hinter Cloudflare, sind drei Dinge nötig:
+
+1. **Cache umgehen:** *Caching → Cache Rules*: Hostname = deine Todo-Domain → **Bypass cache**. Sonst liefert Cloudflare nach einem
+   Update bis zu Stunden alte `app.js`/`app.css` aus (erkennbar an `cf-cache-status: HIT`). Nach dem Anlegen einmal *Purge Cache*.
+2. **Echte Besucher-IP** im nginx (`real_ip`, siehe Kommentar in [`deploy/nginx.conf`](deploy/nginx.conf)), damit Login-Sperre und
+   Audit-Log nicht alle Besucher als dieselbe Cloudflare-IP sehen.
+3. Live-Streams (SSE) laufen durch Cloudflare, solange nginx sie nicht puffert (Block ist in der Vorlage enthalten).
+
 ### Ollama & Whisper auf dem Host
 
 Der Container erreicht den Host über `host.docker.internal`.
