@@ -8,7 +8,7 @@ from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
 
-from . import config
+from . import config, devices
 from .db import now, session
 
 log = logging.getLogger("todo.push")
@@ -38,6 +38,10 @@ def _send_sync(user_ids: list[int], payload: dict) -> None:
         return
     marks = ",".join("?" * len(user_ids))
     with session() as conn:
+        try:  # native Geräte (Android-App): Warteschlange + Live-Zustellung
+            devices.enqueue_for_users(conn, user_ids, payload["title"], payload.get("body", ""), payload.get("url"))
+        except Exception as exc:
+            log.warning("Geräte-Zustellung fehlgeschlagen: %s", exc)
         subs = conn.execute(f"SELECT * FROM push_subscriptions WHERE user_id IN ({marks})", user_ids).fetchall()
         for s in subs:
             try:
@@ -89,3 +93,4 @@ def _check_due() -> None:
             conn.execute("UPDATE todos SET reminded = 1 WHERE id = ?", (r["id"],))
             _send_sync([r["user_id"]], {"title": "Aufgabe fällig", "body": r["title"][:200], "url": "/"})
         conn.execute("DELETE FROM sessions WHERE expires_at < ?", (now(),))
+        devices.cleanup(conn)

@@ -6,15 +6,15 @@ import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from . import events, push, todos
+from . import devices, events, push, todos
 from .db import audit, get_db, now
 from .security import Auth, client_ip, get_agent, get_auth, new_agent_key
 
 OWNER = "todo"
-SCOPES = {"send", "todos:read", "todos:write"}
+SCOPES = {"send", "todos:read", "todos:write", "notify"}
+BUILTIN_PREFIXES = ("todo.", "device.")
 _NAME = re.compile(r"^[A-Za-z0-9_.-]{1,64}$")
 
 router = APIRouter(prefix="/api/agent-bus", tags=["agent-bus"])
@@ -100,6 +100,21 @@ def _run_todo_task(conn: sqlite3.Connection, user_id: int, agent: sqlite3.Row, t
     if task_type == "todo.complete":
         need("todos:write")
         return {"todo": todos.update_todo(conn, user_id, int(payload.get("id", 0)), {"done": True})}
+    if task_type == "device.notify":
+        need("notify")
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise ValueError("title fehlt.")
+        device_id = None
+        if payload.get("device"):
+            row = conn.execute("SELECT id FROM devices WHERE user_id = ? AND name = ? COLLATE NOCASE",
+                               (user_id, str(payload["device"]))).fetchone()
+            if row is None:
+                raise LookupError(f"Gerät '{payload['device']}' existiert nicht.")
+            device_id = row["id"]
+        url = devices._check_url(payload.get("url"))
+        sent = devices.enqueue(conn, user_id, title[:80], str(payload.get("body") or "")[:500], url, device_id)
+        return {"queued": len(sent)}
     raise LookupError(f"Unbekannter Task-Typ '{task_type}'.")
 
 
@@ -117,7 +132,7 @@ def send_message(conn: sqlite3.Connection, user_id: int, from_agent: sqlite3.Row
         if to_agent is None:
             raise HTTPException(404, "Empfänger nicht gefunden.")
         to_label = to_agent["name"]
-    builtin = to_label == OWNER and data.kind == "task" and (data.task_type or "").startswith("todo.")
+    builtin = to_label == OWNER and data.kind == "task" and (data.task_type or "").startswith(BUILTIN_PREFIXES)
     if from_agent is not None and "send" not in from_agent["scopes"].split(",") and not builtin:
         raise HTTPException(403, "Scope 'send' fehlt für diesen Agent.")
 
@@ -143,7 +158,7 @@ def send_message(conn: sqlite3.Connection, user_id: int, from_agent: sqlite3.Row
     events.publish("user", user_id, "bus", out)
     if to_agent is not None:
         events.publish("agent", to_agent["id"], "message", out)
-    elif from_agent is not None:
+    elif from_agent is not None and not (builtin and status == "completed"):  # erledigte Eingebaut-Tasks brauchen keinen Push
         label = data.content if data.kind == "text" else f"Task: {data.task_type} ({status})"
         push.notify_threadsafe([user_id], f"Nachricht von {from_label}", label or "", "/#bus")
     return out
@@ -291,8 +306,7 @@ async def sse(channel: str, key: int, request: Request):
         finally:
             events.unsubscribe(channel, key, q)
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return events.sse_response(gen())
 
 
 @router.get("/inbox/stream")

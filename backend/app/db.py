@@ -110,6 +110,27 @@ CREATE TABLE IF NOT EXISTS oidc_states (
   link_user_id INTEGER,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS devices (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  platform TEXT NOT NULL DEFAULT 'android',
+  app_version TEXT,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  last_seen_at TEXT
+);
+CREATE TABLE IF NOT EXISTS device_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  device_id INTEGER NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  body TEXT NOT NULL DEFAULT '',
+  url TEXT,
+  created_at TEXT NOT NULL,
+  delivered_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_dm_device ON device_messages(device_id, delivered_at);
 CREATE TABLE IF NOT EXISTS oidc_pending (
   token_hash TEXT PRIMARY KEY,
   provider TEXT NOT NULL,

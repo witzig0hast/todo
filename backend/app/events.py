@@ -33,8 +33,20 @@ def _deliver(channel: str, key: int, payload: str) -> None:
             pass
 
 
-def publish(channel: str, key: int, event: str, data: Any) -> None:
+def has_subscribers(channel: str, key: int) -> bool:
+    return bool(_subs.get((channel, key)))
+
+
+def publish(channel: str, key: int, event: str, data: Any, event_id: int | None = None) -> None:
     """Thread-sicher: darf aus synchronen Endpunkten (Threadpool) aufgerufen werden."""
-    payload = f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
+    id_line = f"id: {event_id}\n" if event_id is not None else ""
+    payload = f"{id_line}event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
     if _loop is not None and _loop.is_running():
         _loop.call_soon_threadsafe(_deliver, channel, key, payload)
+
+
+def sse_response(gen):
+    from fastapi.responses import StreamingResponse
+
+    return StreamingResponse(gen, media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})

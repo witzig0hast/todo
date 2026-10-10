@@ -125,6 +125,7 @@ async function boot() {
   renderApp(root);
   openStream();
   loadPendingCount();
+  initAndroid();
   if (ssoCode === 'linked') toast('Anmeldung verknüpft', 'ok');
   if (ssoCode === 'link_taken') toast('Dieses SSO-Konto ist bereits mit einem anderen Benutzer verknüpft.', 'err');
 }
@@ -615,7 +616,12 @@ curl -N -H "X-Agent-Key: tdo_…" ${o}/api/agent-bus/inbox/stream
 curl -X POST ${o}/api/agent-bus/messages/ID/result -H "X-Agent-Key: tdo_…" \\
   -H "Content-Type: application/json" -d '{"status":"completed","result":{"ok":true}}'
 
-# Task-Typen: todo.create, todo.list, todo.complete`;
+# Benachrichtigung an ein Gerät (Scope notify; "device" weglassen = alle Geräte)
+curl -X POST ${o}/api/agent-bus/agent/messages -H "X-Agent-Key: tdo_…" \\
+  -H "Content-Type: application/json" -d '{"to":"todo","kind":"task","task_type":"device.notify",
+  "payload":{"device":"Pixel 8","title":"Build fertig","body":"main ist grün","url":"/#/bus"}}'
+
+# Task-Typen: todo.create, todo.list, todo.complete, device.notify`;
 }
 const refreshAgents = guard(async () => {
   state.agents = (await api('/agent-bus/agents')).agents;
@@ -646,8 +652,8 @@ function keySheet(name, key) {
 function newAgentSheet() {
   const name = h('input', { type: 'text', maxlength: 64, placeholder: 'z. B. shop-backend', autocapitalize: 'none', required: true });
   const desc = h('input', { type: 'text', maxlength: 512, placeholder: 'Wofür ist der Agent?' });
-  const scopes = { send: true, 'todos:read': false, 'todos:write': false };
-  const labels = { send: 'Nachrichten senden', 'todos:read': 'Todos lesen', 'todos:write': 'Todos anlegen & abhaken' };
+  const scopes = { send: true, 'todos:read': false, 'todos:write': false, notify: false };
+  const labels = { send: 'Nachrichten senden', 'todos:read': 'Todos lesen', 'todos:write': 'Todos anlegen & abhaken', notify: 'Nachrichten an Geräte senden' };
   const boxes = Object.keys(scopes).map((s) => h('label', { class: 'row', style: 'justify-content:space-between' }, labels[s],
     h('input', { type: 'checkbox', checked: scopes[s], style: 'width:22px;height:22px', onchange: (e) => { scopes[s] = e.target.checked; } })));
   const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
@@ -735,6 +741,9 @@ function viewSettings(view) {
   view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model));
   // Push
   view.appendChild(pushCard());
+  const devicesBox = h('div', { class: 'glass card col' });
+  view.appendChild(devicesBox);
+  refreshDevices(devicesBox);
   // Single Sign-On
   const ssoBox = h('div', { class: 'glass card col' });
   view.appendChild(ssoBox);
@@ -745,7 +754,7 @@ function viewSettings(view) {
   view.appendChild(h('form', { class: 'glass card col', onsubmit: guard(async (e) => { e.preventDefault(); await api('/auth/password', { method: 'POST', body: { current_password: cur.value, new_password: nw.value } }); cur.value = nw.value = ''; state.user.has_password = true; toast('Passwort gespeichert – andere Geräte wurden abgemeldet.', 'ok'); route(); }) },
     h('h3', {}, state.user.has_password ? 'Passwort ändern' : 'Passwort festlegen'), state.user.has_password ? h('label', { class: 'field' }, 'Aktuell', cur) : h('p', { class: 'muted small' }, 'Dein Konto wurde über SSO angelegt und hat noch kein Passwort. Mit einem Passwort kannst du dich zusätzlich lokal anmelden.'), h('label', { class: 'field' }, 'Neu', nw), h('button', { class: 'btn', type: 'submit' }, state.user.has_password ? 'Ändern' : 'Festlegen')));
   view.appendChild(h('div', { class: 'row wrap' }, state.user.role === 'admin' ? btn('Administration', '', () => go('admin'), 'shield') : null,
-    btn('Abmelden', 'danger', guard(async () => { await api('/auth/logout', { method: 'POST' }); state.user = null; state.csrf = null; closeStream(); boot(); }), 'out')));
+    btn('Abmelden', 'danger', guard(async () => { await androidUnregister(); await api('/auth/logout', { method: 'POST' }); state.user = null; state.csrf = null; closeStream(); boot(); }), 'out')));
 }
 const refreshSso = guard(async (box) => {
   const [info, ids] = await Promise.all([api('/auth/oidc/providers', { noAuthRedirect: true }), api('/auth/identities')]);
@@ -760,6 +769,77 @@ const refreshSso = guard(async (box) => {
   info.providers.filter((p) => !linked.has(p.id)).forEach((p) => box.appendChild(h('a', { class: 'btn', href: '/api/auth/oidc/' + encodeURIComponent(p.id) + '/login?link=1' }, icon('key'), p.name + ' verknüpfen')));
   if (!ids.has_password && ids.identities.length === 1) box.appendChild(h('div', { class: 'muted small' }, 'Tipp: Lege unten ein Passwort fest, um die Verknüpfung später trennen zu können.'));
 });
+
+// ------------------------------------------------------------------ Geräte & Android-App
+// In der Android-App (WebView) stellt die App ein Objekt `TodoAndroid` bereit (nur für die eigene Server-Origin).
+const android = { info: null, deviceId: null };
+const hasAndroid = () => typeof window.TodoAndroid === 'object' && window.TodoAndroid !== null;
+const nativeSend = (msg) => { if (hasAndroid()) window.TodoAndroid.postMessage(JSON.stringify(msg)); };
+
+function initAndroid() {
+  if (!hasAndroid()) return;
+  window.TodoAndroid.onmessage = guard(async (e) => {
+    let msg; try { msg = JSON.parse(e.data); } catch (_) { return; }
+    if (msg.type === 'info') {
+      android.info = msg; android.deviceId = null;
+      const { devices } = await api('/devices');
+      const known = msg.registered && devices.some((d) => d.id === msg.deviceId);
+      if (known) android.deviceId = msg.deviceId;
+      else {
+        const d = await api('/devices/register', { method: 'POST', body: { name: msg.name || 'Android', platform: 'android', app_version: msg.appVersion || null } });
+        android.deviceId = d.id;
+        nativeSend({ type: 'register', deviceId: d.id, token: d.token, name: d.name, serverUrl: location.origin });
+      }
+      const box = $('#devices-card'); if (box) refreshDevices(box);
+    } else if (msg.type === 'registered') { const box = $('#devices-card'); if (box) refreshDevices(box); }
+  });
+  nativeSend({ type: 'hello' });
+}
+async function androidUnregister() {
+  if (!hasAndroid()) return;
+  try { if (android.deviceId) await api('/devices/' + android.deviceId, { method: 'DELETE' }); } catch (_) { /* egal */ }
+  nativeSend({ type: 'unregister' }); android.deviceId = null;
+}
+
+const refreshDevices = guard(async (box) => {
+  box.id = 'devices-card';
+  const { devices } = await api('/devices');
+  clear(box);
+  box.appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Geräte'), devices.length ? btn('An alle', 'sm', () => deviceSheet(null), 'send') : null));
+  box.appendChild(h('p', { class: 'muted small' }, 'Geräte mit der Android-App erhalten Nachrichten direkt als Benachrichtigung – auch Erinnerungen, Agent-Bus-Meldungen und Freigaben.'));
+  if (!devices.length) box.appendChild(h('div', { class: 'muted small' }, 'Noch kein Gerät registriert. Installiere die Android-App und melde dich dort an.'));
+  devices.forEach((d) => box.appendChild(h('div', { class: 'row', style: 'align-items:flex-start' },
+    h('div', { class: 'grow' },
+      h('div', { class: 'row wrap', style: 'gap:6px' }, h('strong', {}, d.name), d.id === android.deviceId ? h('span', { class: 'chip' }, 'dieses Gerät') : null,
+        h('span', { class: 'chip dotted ' + (d.online ? 'ok' : '') }, d.online ? 'online' : 'offline'), d.pending ? h('span', { class: 'chip dotted warn' }, d.pending + ' offen') : null),
+      h('div', { class: 'muted small' }, [d.platform === 'android' ? 'Android' : 'Gerät', d.app_version ? 'v' + d.app_version : null, d.last_seen_at ? 'zuletzt ' + fmtTs(d.last_seen_at) : null].filter(Boolean).join(' · '))),
+    h('button', { class: 'icon-btn', 'aria-label': 'Nachricht senden', title: 'Nachricht senden', onclick: () => deviceSheet(d) }, icon('send')),
+    h('button', { class: 'icon-btn', 'aria-label': 'Umbenennen', title: 'Umbenennen', onclick: guard(async () => { const n = prompt('Neuer Name:', d.name); if (!n || !n.trim()) return; await api('/devices/' + d.id, { method: 'PATCH', body: { name: n.trim() } }); refreshDevices(box); }) }, icon('more')),
+    h('button', { class: 'icon-btn', 'aria-label': 'Gerät entfernen', title: 'Entfernen', onclick: guard(async () => { if (!confirm(`„${d.name}“ entfernen? Die App registriert sich beim nächsten Öffnen neu.`)) return; await api('/devices/' + d.id, { method: 'DELETE' }); refreshDevices(box); }) }, icon('trash')))));
+  if (hasAndroid() && android.info) {
+    const i = android.info;
+    box.appendChild(h('div', { class: 'nav-sep' }));
+    box.appendChild(h('div', { class: 'col', style: 'gap:8px' },
+      h('div', { class: 'muted small' }, `Diese App (${i.name}): Benachrichtigungen ${i.notificationsAllowed ? 'erlaubt' : 'AUS'} · Hintergrundverbindung ${i.connected ? 'aktiv' : 'inaktiv'}`),
+      h('div', { class: 'row wrap' },
+        !i.notificationsAllowed ? btn('Benachrichtigungen erlauben', 'sm', () => nativeSend({ type: 'openNotificationSettings' }), 'bell') : null,
+        !i.batteryUnrestricted ? btn('Akku-Optimierung ausschalten', 'sm', () => nativeSend({ type: 'openBatterySettings' })) : null)));
+  }
+});
+
+function deviceSheet(device) {
+  const title = h('input', { type: 'text', maxlength: 80, placeholder: 'Titel', required: true });
+  const body = h('textarea', { maxlength: 500, placeholder: 'Nachricht (optional)', style: 'min-height:80px' });
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    const r = await api('/devices/send', { method: 'POST', body: { device_id: device ? device.id : null, title: title.value.trim(), body: body.value.trim() } });
+    close(); toast(`An ${r.sent} Gerät${r.sent === 1 ? '' : 'e'} gesendet (${r.online} online)`, 'ok');
+    const box = $('#devices-card'); if (box) refreshDevices(box);
+  }) }, h('h2', {}, device ? 'Nachricht an ' + device.name : 'Nachricht an alle Geräte'),
+  h('label', { class: 'field' }, 'Titel', title), h('label', { class: 'field' }, 'Nachricht', body),
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, icon('send'), 'Senden'))));
+  title.focus();
+}
 
 function applyTheme() {
   const t = localStorage.getItem('theme') || 'auto';

@@ -1,0 +1,51 @@
+package app.todo.client
+
+import android.content.Context
+import java.net.URI
+
+/** Einstellungen der App (nur im privaten App-Speicher, Backup ist ausgeschaltet). */
+class Prefs(context: Context) {
+    private val sp = context.applicationContext.getSharedPreferences("todo", Context.MODE_PRIVATE)
+
+    var serverUrl: String?
+        get() = sp.getString("server_url", null) ?: normalizeServerUrl(BuildConfig.DEFAULT_SERVER_URL)
+        set(value) { sp.edit().putString("server_url", value).apply() }
+
+    var deviceToken: String?
+        get() = sp.getString("device_token", null)
+        set(value) { sp.edit().putString("device_token", value).apply() }
+
+    var deviceId: Int
+        get() = sp.getInt("device_id", -1)
+        set(value) { sp.edit().putInt("device_id", value).apply() }
+
+    var deviceName: String?
+        get() = sp.getString("device_name", null)
+        set(value) { sp.edit().putString("device_name", value).apply() }
+
+    /** Weitere Hosts, die im WebView geöffnet werden dürfen (z. B. der SSO-Anbieter, gelernt über Weiterleitungen). */
+    var extraHosts: Set<String>
+        get() = sp.getStringSet("extra_hosts", emptySet()) ?: emptySet()
+        set(value) { sp.edit().putStringSet("extra_hosts", value).apply() }
+
+    fun clearDevice() {
+        sp.edit().remove("device_token").remove("device_id").remove("device_name").apply()
+    }
+
+    companion object {
+        /** Gibt "https://host[:port]" zurück oder null, wenn die Eingabe keine gültige https-Adresse ist. */
+        fun normalizeServerUrl(input: String?): String? {
+            val raw = input?.trim().orEmpty()
+            if (raw.isEmpty()) return null
+            val withScheme = if (raw.contains("://")) raw else "https://$raw"
+            return try {
+                val uri = URI(withScheme)
+                val host = uri.host
+                if (uri.scheme != "https" || host.isNullOrBlank()) null
+                else if (uri.port != -1) "https://$host:${uri.port}" else "https://$host"
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+}
