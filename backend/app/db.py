@@ -110,6 +110,15 @@ CREATE TABLE IF NOT EXISTS oidc_states (
   link_user_id INTEGER,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS oidc_pending (
+  token_hash TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  email TEXT,
+  claims TEXT NOT NULL,
+  is_admin_group INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,

@@ -73,13 +73,19 @@ def start(client, link=False):
     return r.headers["location"], {k: v[0] for k, v in parse_qs(urlparse(r.headers["location"]).query).items()}
 
 
-def sso_login(client, idp, sub="u1", name="anna", link=False, nonce=None, **extra):
+def sso_login(client, idp, sub="u1", name="anna", link=False, nonce=None, choose="create", **extra):
+    """Führt den Callback aus. Landet man auf der Auswahlseite (es gibt Passwort-Konten), wird je nach `choose`
+    automatisch 'neues Konto' gewählt ("create") oder die Auswahl-Location zurückgegeben (None)."""
     loc, q = start(client, link)
     idp.nonce = nonce if nonce is not None else q["nonce"]
     idp.claims = {"sub": sub, "preferred_username": name, "email": f"{name}@example.com", **extra}
     r = client.get(f"/api/auth/oidc/authentik/callback?code=abc&state={q['state']}", follow_redirects=False)
     assert r.status_code == 302
-    return r.headers["location"]
+    where = r.headers["location"]
+    if where == "/?sso=choose" and choose == "create":
+        status = client.post("/api/auth/sso/pending/create").json()["status"]
+        return "/?sso=ok" if status == "ok" else f"/?sso={status}"
+    return where
 
 
 def test_providers_public_without_secret(client, idp):
@@ -277,3 +283,119 @@ def test_provider_config_loading(monkeypatch):
     monkeypatch.setenv("OIDC_PROVIDERS", json.dumps([{"id": "bad id!", "issuer": "x", "client_id": "y"}]))
     with pytest.raises(ValueError):
         config.load_oidc_providers()
+
+
+# ------------------------------------------------------------------ Verknüpfen beim SSO-Login
+def test_choose_page_when_password_accounts_exist(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    assert sso_login(client, idp, sub="N1", name="alice-sso", choose=None) == "/?sso=choose"
+    assert client.get("/api/auth/me").status_code == 401  # noch nicht angemeldet
+    info = client.get("/api/auth/sso/pending").json()
+    assert info == {"provider": "authentik", "provider_name": "Authentik", "email": "alice-sso@example.com",
+                    "username": "alice-sso"}
+    from app import db
+    with db.session() as c:
+        assert c.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 1  # noch kein Konto angelegt
+
+
+def test_link_existing_account_at_login(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    assert sso_login(client, idp, sub="N2", name="irgendwer", choose=None) == "/?sso=choose"
+    bad = client.post("/api/auth/sso/pending/link", json={"username": "alice", "password": "falsch-falsch"})
+    assert bad.status_code == 401
+    assert client.get("/api/auth/sso/pending").status_code == 200  # Auswahl bleibt offen
+    ok = client.post("/api/auth/sso/pending/link", json={"username": "alice", "password": "passwort-12345"})
+    assert ok.status_code == 200 and ok.json() == {"status": "ok"}
+    assert client.get("/api/auth/me").json()["user"]["username"] == "alice"
+    assert [i["provider"] for i in client.get("/api/auth/identities").json()["identities"]] == ["authentik"]
+    assert client.get("/api/auth/sso/pending").status_code == 404  # einmalig verbraucht
+    # beim nächsten Mal direkt per SSO in dasselbe Konto
+    client.cookies.clear()
+    assert sso_login(client, idp, sub="N2", name="irgendwer", choose=None) == "/?sso=ok"
+    assert client.get("/api/auth/me").json()["user"]["username"] == "alice"
+
+
+def test_link_at_login_is_case_insensitive_for_username(client, idp):
+    make_user(client, "Alice")
+    client.cookies.clear()
+    sso_login(client, idp, sub="N3", name="x", choose=None)
+    r = client.post("/api/auth/sso/pending/link", json={"username": "alice", "password": "passwort-12345"})
+    assert r.status_code == 200
+
+
+def test_link_at_login_lockout(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    sso_login(client, idp, sub="N4", name="x", choose=None)
+    for _ in range(config.LOGIN_MAX_FAILURES):
+        assert client.post("/api/auth/sso/pending/link", json={"username": "alice", "password": "nein-nein"}).status_code == 401
+    r = client.post("/api/auth/sso/pending/link", json={"username": "alice", "password": "passwort-12345"})
+    assert r.status_code == 429  # auch das richtige Passwort wird jetzt blockiert
+
+
+def test_link_at_login_requires_usable_password_and_approved_account(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    # SSO-only-Konto (kein Passwort) kann kein Ziel sein
+    sso_login(client, idp, sub="S0", name="ssoonly")
+    client.cookies.clear()
+    sso_login(client, idp, sub="N5", name="x", choose=None)
+    r = client.post("/api/auth/sso/pending/link", json={"username": "ssoonly", "password": "irgendwas-langes"})
+    assert r.status_code == 401
+    # ausstehendes / gesperrtes Konto ist kein Ziel
+    from app import db
+    make_user(client, "bob")  # pending
+    r = client.post("/api/auth/sso/pending/link", json={"username": "bob", "password": "passwort-12345"})
+    assert r.status_code == 403
+
+
+def test_create_new_account_from_choice(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    sso_login(client, idp, sub="N6", name="alice", choose=None)
+    r = client.post("/api/auth/sso/pending/create")
+    assert r.json() == {"status": "pending"}  # keine Auto-Freigabe
+    assert client.get("/api/auth/me").status_code == 401
+    assert client.post("/api/auth/sso/pending/create").status_code == 404  # Token verbraucht
+    from app import db
+    with db.session() as c:
+        assert sorted(r["username"] for r in c.execute("SELECT username FROM users")) == ["alice", "alice-2"]
+
+
+def test_pending_requires_cookie_expiry_and_origin(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    assert client.get("/api/auth/sso/pending").status_code == 404
+    sso_login(client, idp, sub="N7", name="x", choose=None)
+    # fremder Origin wird abgelehnt (CSRF-Schutz zusätzlich zum SameSite=Strict-Cookie)
+    r = client.post("/api/auth/sso/pending/create", headers={"Origin": "https://evil.example"})
+    assert r.status_code == 403
+    # abgelaufen
+    from app import db
+    with db.session() as c:
+        c.execute("UPDATE oidc_pending SET created_at = '2000-01-01T00:00:00Z'")
+    assert client.get("/api/auth/sso/pending").status_code == 404
+    # ohne Cookie
+    client.cookies.clear()
+    assert client.post("/api/auth/sso/pending/link", json={"username": "alice", "password": "passwort-12345"}).status_code == 404
+
+
+def test_cancel_choice(client, idp):
+    make_user(client, "alice")
+    client.cookies.clear()
+    sso_login(client, idp, sub="N8", name="x", choose=None)
+    assert client.delete("/api/auth/sso/pending").status_code == 204
+    assert client.get("/api/auth/sso/pending").status_code == 404
+    from app import db
+    with db.session() as c:
+        assert c.execute("SELECT COUNT(*) FROM oidc_pending").fetchone()[0] == 0
+        assert c.execute("SELECT COUNT(*) FROM identities").fetchone()[0] == 0
+
+
+def test_no_choice_when_local_auth_disabled(client, idp, monkeypatch):
+    make_user(client, "alice")
+    client.cookies.clear()
+    monkeypatch.setattr(config, "LOCAL_AUTH_ENABLED", False)
+    assert sso_login(client, idp, sub="N9", name="neu", choose=None) == "/?sso=pending"  # direkt neues Konto

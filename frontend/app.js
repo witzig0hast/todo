@@ -114,9 +114,12 @@ async function boot() {
   if (ssoCode) history.replaceState(null, '', location.pathname + location.hash); // Parameter aus der URL entfernen
   if (!state.user) {
     closeStream();
+    if (ssoCode === 'choose') {
+      try { return renderChoose(root, await api('/auth/sso/pending', { noAuthRedirect: true })); } catch (_) { /* abgelaufen -> normale Anmeldung */ }
+    }
     let sso = { providers: [], local_auth: true };
     try { sso = await api('/auth/oidc/providers', { noAuthRedirect: true }); } catch (_) { /* nur lokale Anmeldung */ }
-    return renderAuth(root, sso, ssoCode);
+    return renderAuth(root, sso, ssoCode === 'choose' ? 'error' : ssoCode);
   }
   await loadAll();
   renderApp(root);
@@ -173,6 +176,34 @@ function renderAuth(root, sso = { providers: [], local_auth: true }, ssoCode = n
   if (ssoCode && SSO_MESSAGES[ssoCode]) { err.className = 'error ' + (SSO_MESSAGES[ssoCode][0] === 'notice' ? 'notice' : ''); err.textContent = SSO_MESSAGES[ssoCode][1]; }
   root.appendChild(h('div', { class: 'auth' }, h('div', { class: 'auth-card glass' }, form)));
   if (local) user.focus();
+}
+
+// Nach dem ersten SSO-Login, wenn es schon Passwort-Konten gibt: neues Konto anlegen oder bestehendes verknüpfen.
+function renderChoose(root, info) {
+  const err = h('div', { class: 'error', role: 'alert' });
+  const user = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true, maxlength: 64 });
+  const pw = h('input', { type: 'password', autocomplete: 'current-password', required: true, maxlength: 256 });
+  const submit = h('button', { class: 'btn primary', type: 'submit' }, icon('key'), 'Mit diesem Konto verknüpfen');
+  const done = async (r) => {
+    if (r.status === 'ok') return boot();
+    const [kind, text] = SSO_MESSAGES[r.status] || SSO_MESSAGES.error;
+    err.className = 'error ' + (kind === 'notice' ? 'notice' : ''); err.textContent = text;
+    if (r.status === 'pending') setTimeout(() => boot(), 2500);
+  };
+  const form = h('form', { class: 'col', onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = ''; submit.disabled = true;
+    try { await done(await api('/auth/sso/pending/link', { method: 'POST', body: { username: user.value, password: pw.value }, noAuthRedirect: true })); }
+    catch (ex) { err.className = 'error'; err.textContent = ex.message; } finally { submit.disabled = false; }
+  } },
+  h('div', { style: 'text-align:center' }, h('div', { class: 'logo' }, icon('key')), h('h1', {}, 'Mit ' + info.provider_name + ' angemeldet'),
+    h('p', { class: 'muted small' }, (info.email || info.username || '') + (info.email || info.username ? ' · ' : '') + 'Hast du schon ein Konto in Todo?')),
+  h('p', { class: 'small muted' }, 'Verknüpfe ' + info.provider_name + ' mit deinem bestehenden Konto – zur Bestätigung gibst du dessen Zugangsdaten ein. Danach meldest du dich künftig direkt per SSO an.'),
+  h('label', { class: 'field' }, 'Benutzername des bestehenden Kontos', user), h('label', { class: 'field' }, 'Passwort', pw), err, submit,
+  h('div', { class: 'divider' }, h('span', {}, 'oder')),
+  btn('Neues Konto erstellen', '', guard(async () => { err.textContent = ''; try { await done(await api('/auth/sso/pending/create', { method: 'POST', noAuthRedirect: true })); } catch (ex) { err.className = 'error'; err.textContent = ex.message; } })),
+  h('div', { class: 'row', style: 'justify-content:center' }, btn('Abbrechen', 'sm', guard(async () => { await api('/auth/sso/pending', { method: 'DELETE', noAuthRedirect: true }); boot(); }))));
+  root.appendChild(h('div', { class: 'auth' }, h('div', { class: 'auth-card glass' }, form)));
+  user.focus();
 }
 
 async function loadAll() {

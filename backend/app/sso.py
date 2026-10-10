@@ -10,6 +10,7 @@ Sicherheitsregeln:
 import base64
 import hashlib
 import hmac
+import json
 import logging
 import re
 import secrets
@@ -20,17 +21,20 @@ from urllib.parse import urlencode
 
 import httpx
 import jwt
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel, Field
 
 from . import config, events, push
 from .db import audit, get_db, now, tx
-from .security import (SESSION_COOKIE, Auth, client_ip, create_session, enforce_rate, get_auth, hash_password)
+from .security import (SESSION_COOKIE, Auth, _origin_ok, client_ip, create_session, enforce_rate, get_auth, hash_password,
+                       limiter, sha256, verify_password)
 
 log = logging.getLogger("todo.sso")
 router = APIRouter(prefix="/api/auth", tags=["sso"])
 
 STATE_COOKIE = "oidc_state"
+PENDING_COOKIE = "oidc_pending"
 STATE_TTL = 600
 ASYMMETRIC = ["RS256", "RS384", "RS512", "ES256", "ES384", "ES512", "PS256", "PS384", "PS512"]
 SYMMETRIC = ["HS256", "HS384", "HS512"]
@@ -220,11 +224,78 @@ async def _claims(p: dict, doc: dict, tokens: dict, nonce: str) -> dict:
     return claims
 
 
+def _session_cookie(resp: Response, token: str) -> None:
+    resp.set_cookie(SESSION_COOKIE, token, max_age=config.SESSION_DAYS * 86400, httponly=True,
+                    secure=config.COOKIE_SECURE, samesite="strict", path="/")
+
+
 def _finish_login(conn: sqlite3.Connection, request: Request, user_id: int) -> RedirectResponse:
     token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
     resp = _back("ok")
-    resp.set_cookie(SESSION_COOKIE, token, max_age=config.SESSION_DAYS * 86400, httponly=True,
-                    secure=config.COOKIE_SECURE, samesite="strict", path="/")
+    _session_cookie(resp, token)
+    return resp
+
+
+def _can_link_existing(conn: sqlite3.Connection) -> bool:
+    """Auswahlseite nur, wenn es Passwort-Konten gibt, auf die verknüpft werden könnte."""
+    return config.LOCAL_AUTH_ENABLED and conn.execute("SELECT 1 FROM users WHERE has_password = 1 LIMIT 1").fetchone() is not None
+
+
+def _create_account(conn: sqlite3.Connection, p: dict, claims: dict, sub: str, email: str | None,
+                    is_admin_group: bool, ip: str) -> tuple[int, str | None]:
+    """Legt ein neues SSO-Konto an. Gibt (user_id, Benutzername falls Freigabe nötig) zurück."""
+    with tx(conn):
+        if conn.execute("SELECT 1 FROM identities WHERE provider = ? AND subject = ?", (p["id"], sub)).fetchone():
+            raise SsoError("Identität existiert bereits.")
+        first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+        approved = first or p["auto_approve"]
+        role = "admin" if first or (is_admin_group and approved) else "user"
+        username = _username(conn, claims, p)
+        cur = conn.execute(
+            "INSERT INTO users (username, password_hash, has_password, role, status, created_at, approved_at)"
+            " VALUES (?,?,?,?,?,?,?)",
+            (username, hash_password(secrets.token_urlsafe(32)), 0, role, "approved" if approved else "pending",
+             now(), now() if approved else None))
+        conn.execute("INSERT INTO identities (user_id, provider, subject, email, created_at) VALUES (?,?,?,?,?)",
+                     (cur.lastrowid, p["id"], sub, email, now()))
+        audit(conn, username, "sso_register", f"{p['id']} role={role} approved={approved}", cur.lastrowid, ip)
+    return cur.lastrowid, (None if approved else username)
+
+
+def _finish(conn: sqlite3.Connection, p: dict, user_id: int, sub: str, email: str | None, is_admin_group: bool,
+            pending_new: str | None, ip: str) -> str:
+    """Prüft den Kontostatus. Gibt 'ok' | 'pending' | 'denied' zurück; bei 'ok' ist die Anmeldung erlaubt."""
+    user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    if pending_new:
+        admins = [r["id"] for r in conn.execute("SELECT id FROM users WHERE role='admin' AND status='approved'")]
+        for a in admins:
+            events.publish("user", a, "admin", {"op": "pending_user", "username": pending_new})
+        push.notify_threadsafe(admins, "Neue Registrierung", f"{pending_new} (SSO) wartet auf Freigabe.", "/#admin")
+    if user["status"] == "pending":
+        return "pending"
+    if user["status"] != "approved":
+        return "denied"
+    if is_admin_group and user["role"] != "admin":  # nur hochstufen, nie automatisch herabstufen
+        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (user_id,))
+    conn.execute("UPDATE identities SET last_login_at = ?, email = COALESCE(?, email) WHERE provider = ? AND subject = ?",
+                 (now(), email, p["id"], sub))
+    audit(conn, user["username"], "sso_login", p["id"], user_id, ip)
+    return "ok"
+
+
+def _park_identity(conn: sqlite3.Connection, p: dict, claims: dict, sub: str, email: str | None,
+                   is_admin_group: bool) -> RedirectResponse:
+    """Unbekannte Identität, aber es gibt Passwort-Konten: Nutzer wählt 'neues Konto' oder 'mit bestehendem verknüpfen'.
+    Die Identität wartet kurz in der DB; der Browser erhält nur einen zufälligen, einmaligen Token (HttpOnly-Cookie)."""
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STATE_TTL)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    conn.execute("DELETE FROM oidc_pending WHERE created_at < ?", (cutoff,))
+    token = secrets.token_urlsafe(32)
+    keep = {"sub": sub, "email": email, p["username_claim"]: claims.get(p["username_claim"])}
+    conn.execute("INSERT INTO oidc_pending (token_hash, provider, subject, email, claims, is_admin_group, created_at) "
+                 "VALUES (?,?,?,?,?,?,?)", (sha256(token), p["id"], sub, email, json.dumps(keep), int(is_admin_group), now()))
+    resp = _back("choose")
+    resp.set_cookie(PENDING_COOKIE, token, max_age=STATE_TTL, httponly=True, secure=config.COOKIE_SECURE,
+                    samesite="strict", path="/api/auth/sso")
     return resp
 
 
@@ -268,44 +339,108 @@ async def oidc_callback(pid: str, request: Request, code: str | None = None, sta
         return _back("linked")
 
     pending_new = None
+    if ident is None and _can_link_existing(conn):
+        return _park_identity(conn, p, claims, sub, email, is_admin_group)
     if ident is None:
-        with tx(conn):
-            if conn.execute("SELECT 1 FROM identities WHERE provider = ? AND subject = ?", (p["id"], sub)).fetchone():
-                return _back("error")
-            first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-            approved = first or p["auto_approve"]
-            role = "admin" if first or (is_admin_group and approved) else "user"
-            username = _username(conn, claims, p)
-            cur = conn.execute(
-                "INSERT INTO users (username, password_hash, has_password, role, status, created_at, approved_at)"
-                " VALUES (?,?,?,?,?,?,?)",
-                (username, hash_password(secrets.token_urlsafe(32)), 0, role, "approved" if approved else "pending",
-                 now(), now() if approved else None))
-            user_id = cur.lastrowid
-            conn.execute("INSERT INTO identities (user_id, provider, subject, email, created_at) VALUES (?,?,?,?,?)",
-                         (user_id, p["id"], sub, email, now()))
-            audit(conn, username, "sso_register", f"{p['id']} role={role} approved={approved}", user_id, ip)
-            if not approved:
-                pending_new = username
+        try:
+            user_id, pending_new = _create_account(conn, p, claims, sub, email, is_admin_group, ip)
+        except SsoError:
+            return _back("error")
     else:
         user_id = ident["user_id"]
+    status = _finish(conn, p, user_id, sub, email, is_admin_group, pending_new, ip)
+    return _finish_login(conn, request, user_id) if status == "ok" else _back(status)
 
-    user = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-    if pending_new:
-        admins = [r["id"] for r in conn.execute("SELECT id FROM users WHERE role='admin' AND status='approved'")]
-        for a in admins:
-            events.publish("user", a, "admin", {"op": "pending_user", "username": pending_new})
-        push.notify_threadsafe(admins, "Neue Registrierung", f"{pending_new} (SSO) wartet auf Freigabe.", "/#admin")
-    if user["status"] == "pending":
-        return _back("pending")
+
+# ------------------------------------------------------------------ Auswahl nach dem ersten SSO-Login
+class LinkExisting(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+def _pending(request: Request, conn: sqlite3.Connection) -> sqlite3.Row:
+    token = request.cookies.get(PENDING_COOKIE)
+    row = conn.execute("SELECT * FROM oidc_pending WHERE token_hash = ?", (sha256(token),)).fetchone() if token else None
+    cutoff = (datetime.now(timezone.utc) - timedelta(seconds=STATE_TTL)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if row is None or row["created_at"] < cutoff or row["provider"] not in config.OIDC_PROVIDERS:
+        raise HTTPException(404, "Keine offene SSO-Anmeldung. Bitte erneut anmelden.")
+    return row
+
+
+def _consume(request: Request, conn: sqlite3.Connection, response: Response) -> None:
+    conn.execute("DELETE FROM oidc_pending WHERE token_hash = ?", (sha256(request.cookies.get(PENDING_COOKIE, "")),))
+    response.delete_cookie(PENDING_COOKIE, path="/api/auth/sso")
+
+
+def _check_origin(request: Request) -> None:
+    if not _origin_ok(request):
+        raise HTTPException(403, "Ungültiger Ursprung.")
+
+
+@router.get("/sso/pending")
+def pending_info(request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    row = _pending(request, conn)
+    p = config.OIDC_PROVIDERS[row["provider"]]
+    claims = json.loads(row["claims"])
+    return {"provider": p["id"], "provider_name": p["name"], "email": row["email"],
+            "username": claims.get(p["username_claim"]) or (row["email"] or "").split("@")[0] or None}
+
+
+@router.post("/sso/pending/create")
+def pending_create(request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    _check_origin(request)
+    row = _pending(request, conn)
+    p, ip = config.OIDC_PROVIDERS[row["provider"]], client_ip(request)
+    try:
+        user_id, pending_new = _create_account(conn, p, json.loads(row["claims"]), row["subject"], row["email"],
+                                               bool(row["is_admin_group"]), ip)
+    except SsoError as exc:
+        raise HTTPException(409, "Diese SSO-Identität ist bereits vergeben.") from exc
+    _consume(request, conn, response)
+    status = _finish(conn, p, user_id, row["subject"], row["email"], bool(row["is_admin_group"]), pending_new, ip)
+    if status == "ok":
+        token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+        _session_cookie(response, token)
+    return {"status": status}
+
+
+@router.post("/sso/pending/link")
+def pending_link(data: LinkExisting, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    """Verknüpft die wartende SSO-Identität mit einem bestehenden Konto - bestätigt per Passwort dieses Kontos."""
+    _check_origin(request)
+    row = _pending(request, conn)
+    p, ip = config.OIDC_PROVIDERS[row["provider"]], client_ip(request)
+    window, limit = config.LOGIN_WINDOW_SECONDS, config.LOGIN_MAX_FAILURES
+    ukey, ikey = f"login-user:{data.username.strip().lower()}", f"login-ip:{ip}"
+    if limiter.blocked(ukey, limit, window) or limiter.blocked(ikey, limit * 4, window):
+        raise HTTPException(429, "Zu viele Fehlversuche. Bitte später erneut versuchen.")
+    user = conn.execute("SELECT * FROM users WHERE username = ?", (data.username.strip(),)).fetchone()
+    usable = user is not None and bool(user["has_password"])
+    if not verify_password(user["password_hash"] if usable else None, data.password):
+        limiter.hit(ukey, window)
+        limiter.hit(ikey, window)
+        audit(conn, data.username.strip(), "sso_link_failed", p["id"], user["id"] if user else None, ip)
+        raise HTTPException(401, "Benutzername oder Passwort falsch.")
+    limiter.reset(ukey)
     if user["status"] != "approved":
-        return _back("denied")
-    if is_admin_group and user["role"] != "admin":  # nur hochstufen, nie automatisch herabstufen
-        conn.execute("UPDATE users SET role = 'admin' WHERE id = ?", (user_id,))
-    conn.execute("UPDATE identities SET last_login_at = ?, email = COALESCE(?, email) WHERE provider = ? AND subject = ?",
-                 (now(), email, p["id"], sub))
-    audit(conn, user["username"], "sso_login", p["id"], user_id, ip)
-    return _finish_login(conn, request, user_id)
+        raise HTTPException(403, "Dieses Konto ist nicht freigegeben oder gesperrt.")
+    with tx(conn):
+        if conn.execute("SELECT 1 FROM identities WHERE provider = ? AND subject = ?", (p["id"], row["subject"])).fetchone():
+            raise HTTPException(409, "Diese SSO-Identität ist bereits vergeben.")
+        conn.execute("INSERT INTO identities (user_id, provider, subject, email, created_at) VALUES (?,?,?,?,?)",
+                     (user["id"], p["id"], row["subject"], row["email"], now()))
+        audit(conn, user["username"], "sso_link", f"{p['id']} (bei der Anmeldung)", user["id"], ip)
+    _consume(request, conn, response)
+    _finish(conn, p, user["id"], row["subject"], row["email"], bool(row["is_admin_group"]), None, ip)
+    token, _ = create_session(conn, user["id"], request.headers.get("user-agent"))
+    _session_cookie(response, token)
+    return {"status": "ok"}
+
+
+@router.delete("/sso/pending", status_code=204)
+def pending_cancel(request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    _check_origin(request)
+    _consume(request, conn, response)
 
 
 # ------------------------------------------------------------------ Verknüpfte Anmeldungen

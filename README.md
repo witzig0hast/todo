@@ -66,8 +66,12 @@ auf der Anmeldeseite erscheint dann „Mit Authentik anmelden“.
 - **Freigabe-Regel bleibt:** Der allererste Benutzer überhaupt wird Admin (auch per SSO), alle weiteren SSO-Benutzer sind
   `pending`, bis ein Admin sie freigibt – außer `OIDC_AUTO_APPROVE=true` (sinnvoll, wenn Authentik den Zugang schon steuert).
   Gruppen in `OIDC_ADMIN_GROUPS` werden bei der Anmeldung zu Admins hochgestuft (nie automatisch herabgestuft).
-- **Keine automatische Verknüpfung per Name oder E-Mail** (Schutz vor Konto-Übernahme): Ein SSO-Login erzeugt ein eigenes Konto.
-  Ein bestehendes Passwort-Konto verknüpfst du bewusst unter *Einstellungen → Single Sign-On*; dort lässt es sich auch wieder trennen.
+- **Bestehendes Konto mit SSO verbinden** – zwei Wege, beide ohne automatische Verknüpfung per Name oder E-Mail
+  (Schutz vor Konto-Übernahme):
+  1. *Beim ersten SSO-Login:* Gibt es schon Passwort-Konten, fragt die App „Neues Konto erstellen“ oder „Mit bestehendem Konto
+     verknüpfen“. Zum Verknüpfen gibst du Benutzername und Passwort des bestehenden Kontos ein (mit Sperre nach Fehlversuchen);
+     danach meldest du dich direkt per SSO in genau dieses Konto an.
+  2. *Später in den Einstellungen:* angemeldet unter *Einstellungen → Single Sign-On* verknüpfen und jederzeit wieder trennen.
 - SSO-Konten haben zunächst kein Passwort (in den Einstellungen nachträglich festlegbar, nötig zum Trennen der letzten Verknüpfung).
 - `LOCAL_AUTH_ENABLED=false` schaltet Passwort-Login und Registrierung ab (nur wirksam, wenn SSO konfiguriert ist).
 - Abmelden beendet nur die Sitzung in Todo, nicht die beim Anbieter.
