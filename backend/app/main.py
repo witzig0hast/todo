@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import logging
 from contextlib import asynccontextmanager
 
@@ -66,9 +67,18 @@ def service_worker():
                         headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"})
 
 
+def _asset_version(name: str) -> str:
+    return hashlib.sha256((config.FRONTEND_DIR / name).read_bytes()).hexdigest()[:10]
+
+
 @app.get("/")
 def index():
-    return FileResponse(config.FRONTEND_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    """Startseite mit versionierten Asset-URLs (?v=<Prüfsumme>): Nach einem Update holt jeder Browser/CDN
+    (z. B. Cloudflare) automatisch die neuen Dateien, ohne dass ein Cache geleert werden muss."""
+    html = (config.FRONTEND_DIR / "index.html").read_text(encoding="utf-8")
+    for name in ("app.css", "app.js"):
+        html = html.replace(f'"/{name}"', f'"/{name}?v={_asset_version(name)}"')
+    return Response(html, media_type="text/html; charset=utf-8", headers={"Cache-Control": "no-cache"})
 
 
 app.mount("/", StaticFiles(directory=config.FRONTEND_DIR), name="static")

@@ -189,3 +189,12 @@ def test_frontend_is_always_revalidated(client):
         assert r.status_code == 200, path
         assert r.headers["cache-control"] == "no-cache", path
     assert client.get("/api/health").headers["cache-control"] == "no-store"
+
+
+def test_index_uses_versioned_assets(client):
+    import re
+    html = client.get("/").text
+    assert re.search(r'/app\.js\?v=[0-9a-f]{10}"', html) and re.search(r'/app\.css\?v=[0-9a-f]{10}"', html)
+    # die versionierte Adresse liefert die Datei weiterhin aus
+    assert client.get(re.search(r'/app\.js\?v=[0-9a-f]{10}', html).group(0)).status_code == 200
+    assert client.get("/sw.js?v=abc").status_code == 200

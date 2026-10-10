@@ -816,7 +816,9 @@ function viewAdmin(view) {
 
 // ------------------------------------------------------------------ Start
 applyTheme();
-if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
+// Der Service Worker erhält dieselbe Versionsnummer wie app.js, damit auch er nach Updates nicht aus einem CDN-Cache kommt.
+const ASSET_VERSION = document.currentScript && document.currentScript.src ? new URL(document.currentScript.src).search : '';
+if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js' + ASSET_VERSION).catch(() => {});
 window.addEventListener('resize', () => { if (state.user && state.selected) renderDetail(); });
 document.addEventListener('keydown', (e) => {
   if (!state.user) return;
