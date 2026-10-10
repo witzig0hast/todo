@@ -92,6 +92,24 @@ CREATE TABLE IF NOT EXISTS user_settings (
   user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
   ollama_model TEXT
 );
+CREATE TABLE IF NOT EXISTS identities (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  provider TEXT NOT NULL,
+  subject TEXT NOT NULL,
+  email TEXT,
+  created_at TEXT NOT NULL,
+  last_login_at TEXT,
+  UNIQUE (provider, subject)
+);
+CREATE TABLE IF NOT EXISTS oidc_states (
+  state TEXT PRIMARY KEY,
+  provider TEXT NOT NULL,
+  nonce TEXT NOT NULL,
+  verifier TEXT NOT NULL,
+  link_user_id INTEGER,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -121,6 +139,9 @@ def init_db() -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
+        if "has_password" not in cols:  # Migration: SSO-Konten haben zunächst kein lokales Passwort
+            conn.execute("ALTER TABLE users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 1")
 
 
 def get_db() -> Iterator[sqlite3.Connection]:

@@ -196,3 +196,9 @@ pre.code { font: .75rem/1.6 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 .toast { pointer-events: auto; background: var(--accent); color: var(--on-accent); border-radius: var(--radius-sm); padding: 10px 16px; box-shadow: var(--shadow); animation: up .22s; font-size: .875rem; font-weight: 500; }
 .toast.err { background: var(--danger); color: #fff; }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* ---------- SSO ---------- */
+a.btn { text-decoration: none; color: inherit; }
+a.btn.primary { color: var(--on-accent); }
+.divider { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
+.divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }

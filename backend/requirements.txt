@@ -3,3 +3,4 @@ uvicorn[standard]==0.54.0
 argon2-cffi==25.1.0
 pywebpush==2.5.0
 httpx==0.28.1
+pyjwt[crypto]==2.15.1

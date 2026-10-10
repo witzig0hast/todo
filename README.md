@@ -7,6 +7,8 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
 
 - **Benutzer:** Der erste Benutzer wird automatisch **Admin**. Jede weitere Registrierung bleibt `pending`, bis ein
   Admin sie freigibt (Admin-Bereich: freigeben, ablehnen, sperren, Rolle ändern, löschen, Protokoll).
+- **Single Sign-On (OpenID Connect):** Anmeldung über **Authentik** oder jeden anderen OIDC-Anbieter (Keycloak, Authelia,
+  Google, Microsoft, ...), auch mehrere gleichzeitig. Siehe Abschnitt „Single Sign-On“.
 - **Aufgaben:** Listen, Prioritäten, Fälligkeit, Notizen, Unteraufgaben, Wisch-Gesten (rechts = erledigt, links = löschen),
   Tastaturkürzel (`n` oder `/` = neue Aufgabe, `Esc` = Details schließen).
 - **Ollama:** Freitext → Aufgabe („morgen 15 Uhr Zahnarzt anrufen“), Aufgabe in Unteraufgaben zerlegen,
@@ -30,6 +32,45 @@ CSRF-Token + Origin-Prüfung · Rate-Limits (Login pro Konto/IP mit Sperre, Regi
 strikte CSP (kein Inline-Script/-Style), HSTS, `X-Frame-Options`, `nosniff` · jede Abfrage ist auf den Besitzer
 beschränkt · Größenlimits für Anfragen und Audio · Audit-Log · Container: Nicht-Root, `read_only`, `cap_drop: ALL`,
 `no-new-privileges`, nur an `127.0.0.1` gebunden.
+
+## Single Sign-On
+
+Standardmäßig ist SSO aus. Es wird aktiv, sobald `OIDC_ISSUER` (oder `OIDC_PROVIDERS`) und `PUBLIC_URL` in der `.env` stehen –
+auf der Anmeldeseite erscheint dann „Mit Authentik anmelden“.
+
+**Authentik einrichten**
+
+1. *Applications → Providers → Create → OAuth2/OpenID Provider*
+   - Client type: **Confidential**
+   - Redirect URI (strict): `https://todo.example.com/api/auth/oidc/authentik/callback`
+   - Signing Key: ein Zertifikat wählen (RS256; ohne Key nutzt Authentik HS256, das wird mit dem Client-Secret ebenfalls unterstützt)
+   - Scopes: `openid`, `email`, `profile`
+2. *Applications → Create*: Slug z. B. `todo`, Provider zuweisen. Wer sich anmelden darf, steuerst du in Authentik über
+   Gruppen-/Policy-Bindings der Application.
+3. In der `.env`:
+   ```
+   PUBLIC_URL=https://todo.example.com
+   OIDC_ISSUER=https://auth.example.com/application/o/todo/
+   OIDC_CLIENT_ID=<Client ID>
+   OIDC_CLIENT_SECRET=<Client Secret>
+   OIDC_ADMIN_GROUPS=todo-admins      # optional
+   ```
+   dann `docker compose up -d`. (Andere Anbieter: Redirect-URI ist immer `…/api/auth/oidc/<id>/callback`, `<id>` = `OIDC_ID`,
+   Standard `authentik`; für mehrere Anbieter `OIDC_PROVIDERS` als JSON, Beispiel in `.env.example`.)
+
+**Verhalten**
+
+- Der Container muss die Issuer-URL erreichen können (ausgehendes HTTPS).
+- Authorization-Code-Flow mit **PKCE**, `state` (an den Browser gebunden), `nonce`; das ID-Token wird per JWKS-Signatur,
+  `iss`, `aud` und Ablaufzeit geprüft.
+- **Freigabe-Regel bleibt:** Der allererste Benutzer überhaupt wird Admin (auch per SSO), alle weiteren SSO-Benutzer sind
+  `pending`, bis ein Admin sie freigibt – außer `OIDC_AUTO_APPROVE=true` (sinnvoll, wenn Authentik den Zugang schon steuert).
+  Gruppen in `OIDC_ADMIN_GROUPS` werden bei der Anmeldung zu Admins hochgestuft (nie automatisch herabgestuft).
+- **Keine automatische Verknüpfung per Name oder E-Mail** (Schutz vor Konto-Übernahme): Ein SSO-Login erzeugt ein eigenes Konto.
+  Ein bestehendes Passwort-Konto verknüpfst du bewusst unter *Einstellungen → Single Sign-On*; dort lässt es sich auch wieder trennen.
+- SSO-Konten haben zunächst kein Passwort (in den Einstellungen nachträglich festlegbar, nötig zum Trennen der letzten Verknüpfung).
+- `LOCAL_AUTH_ENABLED=false` schaltet Passwort-Login und Registrierung ab (nur wirksam, wenn SSO konfiguriert ist).
+- Abmelden beendet nur die Sitzung in Todo, nicht die beim Anbieter.
 
 ## Installation
 

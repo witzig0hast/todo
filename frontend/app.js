@@ -110,14 +110,29 @@ async function boot() {
     const me = await api('/auth/me', { noAuthRedirect: true });
     state.user = me.user; state.csrf = me.csrf;
   } catch (_) { state.user = null; }
-  if (!state.user) { closeStream(); return renderAuth(root); }
+  const ssoCode = new URLSearchParams(location.search).get('sso');
+  if (ssoCode) history.replaceState(null, '', location.pathname + location.hash); // Parameter aus der URL entfernen
+  if (!state.user) {
+    closeStream();
+    let sso = { providers: [], local_auth: true };
+    try { sso = await api('/auth/oidc/providers', { noAuthRedirect: true }); } catch (_) { /* nur lokale Anmeldung */ }
+    return renderAuth(root, sso, ssoCode);
+  }
   await loadAll();
   renderApp(root);
   openStream();
   loadPendingCount();
+  if (ssoCode === 'linked') toast('Anmeldung verknüpft', 'ok');
+  if (ssoCode === 'link_taken') toast('Dieses SSO-Konto ist bereits mit einem anderen Benutzer verknüpft.', 'err');
 }
 
-function renderAuth(root) {
+const SSO_MESSAGES = {
+  pending: ['notice', 'Dein Konto wurde angelegt und wartet auf die Freigabe durch einen Administrator.'],
+  denied: ['error', 'Dein Konto ist gesperrt oder wurde abgelehnt.'],
+  error: ['error', 'Die SSO-Anmeldung ist fehlgeschlagen. Bitte versuche es erneut.'],
+};
+
+function renderAuth(root, sso = { providers: [], local_auth: true }, ssoCode = null) {
   let mode = 'login';
   const err = h('div', { class: 'error', role: 'alert' });
   const user = h('input', { type: 'text', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', required: true, maxlength: 64 });
@@ -137,6 +152,10 @@ function renderAuth(root) {
     pw.setAttribute('minlength', reg ? '10' : '1');
     pw.placeholder = reg ? 'Mindestens 10 Zeichen' : '';
   }
+  const local = sso.local_auth;
+  const fieldUser = h('label', { class: 'field' }, 'Benutzername', user), fieldPw = h('label', { class: 'field' }, 'Passwort', pw);
+  const toggleRow = h('div', { class: 'row', style: 'justify-content:center' }, toggle);
+  const ssoButtons = sso.providers.map((p) => h('a', { class: 'btn' + (local ? '' : ' primary'), href: '/api/auth/oidc/' + encodeURIComponent(p.id) + '/login' }, icon('key'), 'Mit ' + p.name + ' anmelden'));
   const form = h('form', { class: 'col', onsubmit: async (e) => {
     e.preventDefault(); err.textContent = ''; submit.disabled = true;
     try {
@@ -147,11 +166,13 @@ function renderAuth(root) {
     } catch (ex) { err.textContent = ex.message; } finally { submit.disabled = false; }
   } },
   h('div', { style: 'text-align:center' }, h('div', { class: 'logo' }, icon('check')), title, sub),
-  h('label', { class: 'field' }, 'Benutzername', user), h('label', { class: 'field' }, 'Passwort', pw), err, submit,
-  h('div', { class: 'row', style: 'justify-content:center' }, toggle));
+  ssoButtons, ssoButtons.length > 0 && local ? h('div', { class: 'divider' }, h('span', {}, 'oder')) : null,
+  local ? [fieldUser, fieldPw] : null, err, local ? submit : null, local ? toggleRow : null);
   setMode('login');
+  if (!local) sub.textContent = 'Melde dich mit deinem Single-Sign-On-Konto an.';
+  if (ssoCode && SSO_MESSAGES[ssoCode]) { err.className = 'error ' + (SSO_MESSAGES[ssoCode][0] === 'notice' ? 'notice' : ''); err.textContent = SSO_MESSAGES[ssoCode][1]; }
   root.appendChild(h('div', { class: 'auth' }, h('div', { class: 'auth-card glass' }, form)));
-  user.focus();
+  if (local) user.focus();
 }
 
 async function loadAll() {
@@ -683,14 +704,32 @@ function viewSettings(view) {
   view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model));
   // Push
   view.appendChild(pushCard());
+  // Single Sign-On
+  const ssoBox = h('div', { class: 'glass card col' });
+  view.appendChild(ssoBox);
+  refreshSso(ssoBox);
   // Passwort
   const cur = h('input', { type: 'password', autocomplete: 'current-password', maxlength: 256 });
   const nw = h('input', { type: 'password', autocomplete: 'new-password', minlength: 10, maxlength: 256, placeholder: 'Mindestens 10 Zeichen' });
-  view.appendChild(h('form', { class: 'glass card col', onsubmit: guard(async (e) => { e.preventDefault(); await api('/auth/password', { method: 'POST', body: { current_password: cur.value, new_password: nw.value } }); cur.value = nw.value = ''; toast('Passwort geändert – andere Geräte wurden abgemeldet.', 'ok'); }) },
-    h('h3', {}, 'Passwort ändern'), h('label', { class: 'field' }, 'Aktuell', cur), h('label', { class: 'field' }, 'Neu', nw), h('button', { class: 'btn', type: 'submit' }, 'Ändern')));
+  view.appendChild(h('form', { class: 'glass card col', onsubmit: guard(async (e) => { e.preventDefault(); await api('/auth/password', { method: 'POST', body: { current_password: cur.value, new_password: nw.value } }); cur.value = nw.value = ''; state.user.has_password = true; toast('Passwort gespeichert – andere Geräte wurden abgemeldet.', 'ok'); route(); }) },
+    h('h3', {}, state.user.has_password ? 'Passwort ändern' : 'Passwort festlegen'), state.user.has_password ? h('label', { class: 'field' }, 'Aktuell', cur) : h('p', { class: 'muted small' }, 'Dein Konto wurde über SSO angelegt und hat noch kein Passwort. Mit einem Passwort kannst du dich zusätzlich lokal anmelden.'), h('label', { class: 'field' }, 'Neu', nw), h('button', { class: 'btn', type: 'submit' }, state.user.has_password ? 'Ändern' : 'Festlegen')));
   view.appendChild(h('div', { class: 'row wrap' }, state.user.role === 'admin' ? btn('Administration', '', () => go('admin'), 'shield') : null,
     btn('Abmelden', 'danger', guard(async () => { await api('/auth/logout', { method: 'POST' }); state.user = null; state.csrf = null; closeStream(); boot(); }), 'out')));
 }
+const refreshSso = guard(async (box) => {
+  const [info, ids] = await Promise.all([api('/auth/oidc/providers', { noAuthRedirect: true }), api('/auth/identities')]);
+  state.user.has_password = ids.has_password;
+  if (!info.providers.length && !ids.identities.length) { box.remove(); return; }
+  clear(box);
+  box.appendChild(h('h3', {}, 'Single Sign-On'));
+  ids.identities.forEach((i) => box.appendChild(h('div', { class: 'row' },
+    h('div', { class: 'grow' }, h('strong', {}, i.provider_name), h('div', { class: 'muted small' }, (i.email || 'verknüpft') + (i.last_login_at ? ' · zuletzt ' + fmtTs(i.last_login_at) : ''))),
+    btn('Trennen', 'sm danger', guard(async () => { if (!confirm(`Verknüpfung mit ${i.provider_name} trennen?`)) return; await api('/auth/identities/' + i.id, { method: 'DELETE' }); refreshSso(box); })))));
+  const linked = new Set(ids.identities.map((i) => i.provider));
+  info.providers.filter((p) => !linked.has(p.id)).forEach((p) => box.appendChild(h('a', { class: 'btn', href: '/api/auth/oidc/' + encodeURIComponent(p.id) + '/login?link=1' }, icon('key'), p.name + ' verknüpfen')));
+  if (!ids.has_password && ids.identities.length === 1) box.appendChild(h('div', { class: 'muted small' }, 'Tipp: Lege unten ein Passwort fest, um die Verknüpfung später trennen zu können.'));
+});
+
 function applyTheme() {
   const t = localStorage.getItem('theme') || 'auto';
   if (t === 'auto') document.documentElement.removeAttribute('data-theme'); else document.documentElement.setAttribute('data-theme', t);

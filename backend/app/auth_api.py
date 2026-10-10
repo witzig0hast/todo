@@ -36,7 +36,7 @@ class RegisterIn(Credentials):
 
 
 class PasswordChange(BaseModel):
-    current_password: str = Field(max_length=256)
+    current_password: str = Field(default="", max_length=256)
     new_password: str = Field(min_length=10, max_length=256)
 
 
@@ -46,11 +46,18 @@ def _set_cookie(response: Response, token: str) -> None:
 
 
 def user_public(u: sqlite3.Row) -> dict:
-    return {"id": u["id"], "username": u["username"], "role": u["role"], "status": u["status"]}
+    return {"id": u["id"], "username": u["username"], "role": u["role"], "status": u["status"],
+            "has_password": bool(u["has_password"])}
+
+
+def _require_local_auth() -> None:
+    if not config.LOCAL_AUTH_ENABLED and config.OIDC_PROVIDERS:
+        raise HTTPException(403, "Die Anmeldung mit Passwort ist deaktiviert. Bitte Single Sign-On verwenden.")
 
 
 @router.post("/register", status_code=201)
 def register(data: RegisterIn, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    _require_local_auth()
     ip = client_ip(request)
     enforce_rate(f"register:{ip}", 5, 3600)
     pw_hash = hash_password(data.password)
@@ -78,6 +85,7 @@ def register(data: RegisterIn, request: Request, response: Response, conn: sqlit
 
 @router.post("/login")
 def login(data: Credentials, request: Request, response: Response, conn: sqlite3.Connection = Depends(get_db)):
+    _require_local_auth()
     ip = client_ip(request)
     ukey = f"login-user:{data.username.lower()}"
     ikey = f"login-ip:{ip}"
@@ -116,8 +124,9 @@ def me(auth: Auth = Depends(get_auth)):
 def change_password(data: PasswordChange, request: Request, auth: Auth = Depends(get_auth),
                     conn: sqlite3.Connection = Depends(get_db)):
     enforce_rate(f"pwchange:{auth.id}", 5, 900)
-    if not verify_password(auth.user["password_hash"], data.current_password):
+    if auth.user["has_password"] and not verify_password(auth.user["password_hash"], data.current_password):
         raise HTTPException(403, "Aktuelles Passwort falsch.")
-    conn.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(data.new_password), auth.id))
+    conn.execute("UPDATE users SET password_hash = ?, has_password = 1 WHERE id = ?",
+                 (hash_password(data.new_password), auth.id))
     conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (auth.id, auth.token_hash))
     audit(conn, auth.user["username"], "password_change", None, auth.id, client_ip(request))
