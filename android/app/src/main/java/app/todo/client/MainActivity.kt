@@ -112,7 +112,7 @@ class MainActivity : AppCompatActivity() {
             setTextColor(Color.parseColor("#FAFAFA"))
             setTextSize(TypedValue.COMPLEX_UNIT_SP, 24f)
         }
-        val hint = TextView(this).apply {
+        val infoText = TextView(this).apply {
             text = getString(R.string.setup_hint)
             setTextColor(Color.parseColor("#A1A1AA"))
             setPadding(0, dp(8), 0, dp(20))
@@ -122,7 +122,7 @@ class MainActivity : AppCompatActivity() {
             inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_URI
             setTextColor(Color.parseColor("#FAFAFA"))
             setHintTextColor(Color.parseColor("#71717A"))
-            hint = "https://todo.example.com"
+            this.hint = "https://todo.example.com"
             setText(prefs.serverUrl ?: "")
         }
         val connect = Button(this).apply {
@@ -138,7 +138,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
         root.addView(title)
-        root.addView(hint)
+        root.addView(infoText)
         root.addView(input, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT))
         root.addView(connect, LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT).apply { topMargin = dp(16) })
         setContentView(root)
