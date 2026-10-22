@@ -157,6 +157,17 @@ CREATE TABLE IF NOT EXISTS saved_filters (
   query TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rules (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  match TEXT NOT NULL,
+  action TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_fired_at TEXT,
+  fire_count INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -183,6 +194,12 @@ COLUMNS = [
     ("device_messages", "deliver_after", "TEXT"),               # während Ruhezeit zurückgehalten bis ...
     ("device_messages", "urgent", "INTEGER NOT NULL DEFAULT 0"),
     ("todos", "location", "TEXT"),                              # JSON {name, lat, lon, radius}
+    ("agents", "webhook_hash", "TEXT"),                         # Webhook-Token (Hash) für eingehende Webhooks
+    ("messages", "delivered_at", "TEXT"),                       # vom Empfänger-Agent abgeholt
+    ("messages", "rules_fired", "TEXT"),                        # JSON-Liste ausgelöster Regeln
+    ("device_messages", "bus_message_id", "INTEGER"),
+    ("device_messages", "reply_token", "TEXT"),
+    ("device_messages", "options", "TEXT"),                     # JSON-Liste Antwortoptionen
 ]
 
 

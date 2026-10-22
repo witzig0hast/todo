@@ -16,7 +16,7 @@ from app.main import app  # noqa: E402
 def client():
     db.init_db()
     with db.session() as c:
-        for t in ("saved_filters", "reminders", "device_messages", "devices", "identities", "oidc_states", "oidc_pending", "audit_log", "messages", "agents", "todos", "lists", "sessions", "push_subscriptions", "users"):
+        for t in ("rules", "saved_filters", "reminders", "device_messages", "devices", "identities", "oidc_states", "oidc_pending", "audit_log", "messages", "agents", "todos", "lists", "sessions", "push_subscriptions", "users"):
             c.execute(f"DELETE FROM {t}")
     security.limiter.clear()
     with TestClient(app, base_url="http://testserver") as c:

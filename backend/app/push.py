@@ -42,7 +42,8 @@ def _send_sync(user_ids: list[int], payload: dict) -> None:
         try:  # native Geräte (Android-App): Warteschlange + Live-Zustellung
             devices.enqueue_for_users(conn, user_ids, payload["title"], payload.get("body", ""), payload.get("url"),
                                       todo_id=payload.get("todo_id"), action_token=payload.get("token"),
-                                      urgent=bool(payload.get("urgent")))
+                                      urgent=bool(payload.get("urgent")), bus_message_id=payload.get("bus_message_id"),
+                                      reply_token=payload.get("reply_token"), options=payload.get("options"))
         except Exception as exc:
             log.warning("Geräte-Zustellung fehlgeschlagen: %s", exc)
         subs = conn.execute(f"SELECT * FROM push_subscriptions WHERE user_id IN ({marks})", user_ids).fetchall()
@@ -67,6 +68,14 @@ def _send_sync(user_ids: list[int], payload: dict) -> None:
 
 async def notify(user_ids: list[int], title: str, body: str, url: str = "/") -> None:
     await asyncio.to_thread(_send_sync, user_ids, {"title": title, "body": body[:200], "url": url})
+
+
+def notify_payload_threadsafe(user_ids: list[int], payload: dict) -> None:
+    """Wie notify_threadsafe, aber mit zusätzlichen Feldern (z. B. bus_message_id, reply_token, options)."""
+    import threading
+
+    payload = {**payload, "body": str(payload.get("body", ""))[:200]}
+    threading.Thread(target=_send_sync, args=(user_ids, payload), daemon=True).start()
 
 
 def notify_threadsafe(user_ids: list[int], title: str, body: str, url: str = "/") -> None:

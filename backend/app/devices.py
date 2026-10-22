@@ -1,6 +1,7 @@
 """Geräte (z. B. die Android-App): Registrierung mit eigenem Geräte-Token, gezielte Nachrichten an einzelne Geräte,
 Live-Zustellung per SSE (`/stream`) mit Warteschlange für Offline-Zeiten und Bestätigung (`ack`)."""
 import asyncio
+import json
 import re
 import secrets
 import sqlite3
@@ -95,7 +96,9 @@ def message_out(r: sqlite3.Row) -> dict:
     return {"id": r["id"], "title": r["title"], "body": r["body"], "url": r["url"], "created_at": r["created_at"],
             "todo_id": r["todo_id"] if "todo_id" in keys else None,
             "action_token": r["action_token"] if "action_token" in keys else None,
-            "urgent": bool(r["urgent"]) if "urgent" in keys else False}
+            "urgent": bool(r["urgent"]) if "urgent" in keys else False,
+            "reply_token": r["reply_token"] if "reply_token" in keys else None,
+            "options": json.loads(r["options"]) if "options" in keys and r["options"] else []}
 
 
 def _unique_name(conn: sqlite3.Connection, user_id: int, name: str, exclude_id: int | None = None) -> str:
@@ -109,7 +112,8 @@ def _unique_name(conn: sqlite3.Connection, user_id: int, name: str, exclude_id: 
 
 def enqueue(conn: sqlite3.Connection, user_id: int, title: str, body: str = "", url: str | None = None,
             device_id: int | None = None, todo_id: int | None = None, action_token: str | None = None,
-            urgent: bool = False) -> list[dict]:
+            urgent: bool = False, bus_message_id: int | None = None, reply_token: str | None = None,
+            options: list[str] | None = None) -> list[dict]:
     """Legt die Nachricht für ein Gerät (oder alle Geräte des Benutzers) in die Warteschlange und stellt sie live zu."""
     if device_id is not None:
         rows = conn.execute("SELECT * FROM devices WHERE id = ? AND user_id = ?", (device_id, user_id)).fetchall()
@@ -121,8 +125,9 @@ def enqueue(conn: sqlite3.Connection, user_id: int, title: str, body: str = "", 
     for d in rows:
         hold = None if urgent else quiet_until(conn, d)
         cur = conn.execute("INSERT INTO device_messages (user_id, device_id, title, body, url, created_at, todo_id, action_token,"
-                           " urgent, deliver_after) VALUES (?,?,?,?,?,?,?,?,?,?)",
-                           (user_id, d["id"], title, body, url, now(), todo_id, action_token, int(urgent), hold))
+                           " urgent, deliver_after, bus_message_id, reply_token, options) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                           (user_id, d["id"], title, body, url, now(), todo_id, action_token, int(urgent), hold,
+                            bus_message_id, reply_token, json.dumps(options) if options else None))
         msg = message_out(conn.execute("SELECT * FROM device_messages WHERE id = ?", (cur.lastrowid,)).fetchone())
         if hold is None:
             events.publish("device", d["id"], "message", msg, event_id=msg["id"])
@@ -131,9 +136,9 @@ def enqueue(conn: sqlite3.Connection, user_id: int, title: str, body: str = "", 
 
 
 def enqueue_for_users(conn: sqlite3.Connection, user_ids: list[int], title: str, body: str = "", url: str | None = None,
-                      todo_id: int | None = None, action_token: str | None = None, urgent: bool = False) -> None:
+                      **extra) -> None:
     for uid in user_ids:
-        enqueue(conn, uid, title, body, url, todo_id=todo_id, action_token=action_token, urgent=urgent)
+        enqueue(conn, uid, title, body, url, **extra)
 
 
 def release_held(conn: sqlite3.Connection) -> int:

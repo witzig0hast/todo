@@ -58,6 +58,50 @@ def read_token(token: str) -> tuple[int, int]:
     return uid, tid
 
 
+def make_reply_token(user_id: int, message_id: int, ttl: int = TTL) -> str:
+    body = f"r.{user_id}.{message_id}.{int(time.time()) + ttl}"
+    sig = hmac.new(_secret(), body.encode(), hashlib.sha256).digest()[:18]
+    return _b64(body.encode()) + "." + _b64(sig)
+
+
+def read_reply_token(token: str) -> tuple[int, int]:
+    try:
+        b, s = token.split(".")
+        body = base64.urlsafe_b64decode(b + "=" * (-len(b) % 4))
+        sig = base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+        if not hmac.compare_digest(sig, hmac.new(_secret(), body, hashlib.sha256).digest()[:18]):
+            raise ValueError
+        kind, uid, mid, exp = body.decode().split(".")
+        if kind != "r":
+            raise ValueError
+        uid, mid, exp = int(uid), int(mid), int(exp)
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise HTTPException(403, "Ungültiger Antwort-Token.") from exc
+    if exp < time.time():
+        raise HTTPException(403, "Antwort-Token abgelaufen.")
+    return uid, mid
+
+
+class ReplyIn(BaseModel):
+    token: str = Field(min_length=10, max_length=300)
+    text: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/actions/reply")
+def reply(data: ReplyIn, request: Request, conn: sqlite3.Connection = Depends(get_db)):
+    """Antwort auf eine Agent-Rückfrage direkt aus der Benachrichtigung."""
+    enforce_rate(f"action:{client_ip(request)}", 60, 60)
+    user_id, message_id = read_reply_token(data.token)
+    user = conn.execute("SELECT username, status FROM users WHERE id = ?", (user_id,)).fetchone()
+    if user is None or user["status"] != "approved":
+        raise HTTPException(403, "Konto nicht freigegeben.")
+    from . import bus
+
+    msg = bus.answer_question(conn, user_id, message_id, data.text.strip(), via="notification")
+    audit(conn, user["username"], "notify_reply", str(message_id), user_id, client_ip(request))
+    return {"ok": True, "status": msg["status"]}
+
+
 class ActionIn(BaseModel):
     token: str = Field(min_length=10, max_length=300)
     action: Literal["done", "snooze"]

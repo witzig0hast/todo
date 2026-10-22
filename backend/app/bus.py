@@ -2,15 +2,17 @@
 import asyncio
 import json
 import re
+import secrets
 import sqlite3
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from . import devices, events, push, todos
-from .db import audit, get_db, now
-from .security import Auth, client_ip, get_agent, get_auth, new_agent_key
+from . import actions, devices, events, push, rules, todos
+from . import config
+from .db import audit, get_db, now, session
+from .security import Auth, client_ip, enforce_rate, get_agent, get_auth, new_agent_key, sha256
 
 OWNER = "todo"
 SCOPES = {"send", "todos:read", "todos:write", "notify"}
@@ -63,12 +65,14 @@ def msg_out(r: sqlite3.Row) -> dict:
     d.pop("user_id", None)
     for k in ("payload", "result"):
         d[k] = json.loads(d[k]) if d[k] else None
+    d["rules_fired"] = json.loads(d["rules_fired"]) if d.get("rules_fired") else []
     return d
 
 
 def agent_out(r: sqlite3.Row) -> dict:
     return {"id": r["id"], "name": r["name"], "description": r["description"], "scopes": r["scopes"].split(","),
-            "key_prefix": r["key_prefix"], "created_at": r["created_at"], "last_seen_at": r["last_seen_at"]}
+            "key_prefix": r["key_prefix"], "created_at": r["created_at"], "last_seen_at": r["last_seen_at"],
+            "webhook": bool(r["webhook_hash"]) if "webhook_hash" in r.keys() else False}
 
 
 # --------------------------------------------------------- eingebaute Todo-Tasks
@@ -156,14 +160,39 @@ def send_message(conn: sqlite3.Connection, user_id: int, from_agent: sqlite3.Row
          json.dumps(data.payload) if data.payload is not None else None, status,
          json.dumps(result) if result is not None else None, ts, ts),
     )
-    out = msg_out(conn.execute("SELECT * FROM messages WHERE id = ?", (cur.lastrowid,)).fetchone())
+    message_id = cur.lastrowid
+    out = msg_out(conn.execute("SELECT * FROM messages WHERE id = ?", (message_id,)).fetchone())
+    if to_agent is None and from_agent is not None:
+        fired = rules.evaluate(conn, user_id, out)
+        if fired:
+            conn.execute("UPDATE messages SET rules_fired = ? WHERE id = ?", (json.dumps(fired), message_id))
+            out["rules_fired"] = fired
     events.publish("user", user_id, "bus", out)
     if to_agent is not None:
         events.publish("agent", to_agent["id"], "message", out)
+    elif from_agent is not None and data.kind == "task" and data.task_type == "ask":
+        # Rückfrage: Benachrichtigung mit Antwortfeld/Optionen (Antwort-Token gilt nur für diese Nachricht)
+        p = data.payload or {}
+        question = str(p.get("question") or data.content or "Rückfrage")[:300]
+        options = [str(o)[:30] for o in (p.get("options") or []) if str(o).strip()][:3]
+        push.notify_payload_threadsafe([user_id], {
+            "title": f"Frage von {from_label}", "body": question, "url": "/#/bus", "bus_message_id": message_id,
+            "reply_token": actions.make_reply_token(user_id, message_id), "options": options, "urgent": bool(p.get("urgent"))})
     elif from_agent is not None and not (builtin and status == "completed"):  # erledigte Eingebaut-Tasks brauchen keinen Push
         label = data.content if data.kind == "text" else f"Task: {data.task_type} ({status})"
-        push.notify_threadsafe([user_id], f"Nachricht von {from_label}", label or "", "/#bus")
+        push.notify_payload_threadsafe([user_id], {"title": f"Nachricht von {from_label}", "body": label or "",
+                                                    "url": "/#/bus", "bus_message_id": message_id})
     return out
+
+
+def answer_question(conn: sqlite3.Connection, user_id: int, message_id: int, text: str, via: str = "web") -> dict:
+    row = conn.execute("SELECT * FROM messages WHERE id = ? AND user_id = ? AND to_label = ? AND kind = 'task' "
+                       "AND task_type = 'ask'", (message_id, user_id, OWNER)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Rückfrage nicht gefunden.")
+    if row["status"] in ("completed", "failed"):
+        raise HTTPException(409, "Diese Rückfrage wurde bereits beantwortet.")
+    return _set_result(conn, row, ResultIn(status="completed", result={"answer": text, "via": via}))
 
 
 # ------------------------------------------------------------------ Nutzer-API
@@ -201,6 +230,73 @@ def rotate_key(agent_id: int, request: Request, auth: Auth = Depends(get_auth),
     return {"api_key": raw}
 
 
+@router.post("/agents/{agent_id}/webhook")
+def enable_webhook(agent_id: int, request: Request, auth: Auth = Depends(get_auth),
+                   conn: sqlite3.Connection = Depends(get_db)):
+    """Erzeugt (oder erneuert) die Webhook-URL eines Agents. Die URL ist das Geheimnis - nur hier im Klartext."""
+    token = "whk_" + secrets.token_urlsafe(32)
+    cur = conn.execute("UPDATE agents SET webhook_hash = ? WHERE id = ? AND user_id = ?", (sha256(token), agent_id, auth.id))
+    if cur.rowcount == 0:
+        raise HTTPException(404, "Agent nicht gefunden.")
+    audit(conn, auth.user["username"], "agent_webhook", str(agent_id), auth.id, client_ip(request))
+    base = config.PUBLIC_URL or str(request.base_url).rstrip("/")
+    return {"url": f"{base}/api/agent-bus/hook/{token}"}
+
+
+@router.delete("/agents/{agent_id}/webhook", status_code=204)
+def disable_webhook(agent_id: int, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    if conn.execute("UPDATE agents SET webhook_hash = NULL WHERE id = ? AND user_id = ?", (agent_id, auth.id)).rowcount == 0:
+        raise HTTPException(404, "Agent nicht gefunden.")
+
+
+def _webhook_summary(body: object, request: Request) -> str:
+    if request.query_params.get("title"):
+        return request.query_params["title"][:500]
+    if isinstance(body, dict):
+        gh = request.headers.get("x-github-event")
+        if gh:
+            repo = (body.get("repository") or {}).get("full_name", "") if isinstance(body.get("repository"), dict) else ""
+            return " ".join(filter(None, ["GitHub", gh, str(body.get("action") or ""), repo]))[:500]
+        for key in ("text", "message", "msg", "title", "summary", "body", "description", "content"):
+            if isinstance(body.get(key), str) and body[key].strip():
+                return body[key].strip()[:500]
+        return "Webhook-Ereignis"
+    return (str(body).strip() or "Webhook-Ereignis")[:500]
+
+
+@router.post("/hook/{token}", status_code=202)
+async def incoming_webhook(token: str, request: Request):
+    """Eingang für fremde Dienste (GitHub, Uptime Kuma, Home Assistant, ...). Auth = geheime URL."""
+    enforce_rate(f"hook:{sha256(token)[:16]}", 60, 60)
+    raw = await request.body()
+    if len(raw) > 64 * 1024:
+        raise HTTPException(413, "Webhook-Inhalt zu groß.")
+    try:
+        body: object = json.loads(raw) if raw else {}
+    except ValueError:
+        body = raw.decode("utf-8", "replace")
+    import asyncio
+
+    def handle() -> dict:
+        with session() as conn:
+            agent = conn.execute("SELECT a.*, u.status AS user_status FROM agents a JOIN users u ON u.id = a.user_id "
+                                 "WHERE a.webhook_hash = ?", (sha256(token),)).fetchone()
+            if agent is None or agent["user_status"] != "approved":
+                raise HTTPException(404, "Unbekannter Webhook.")
+            conn.execute("UPDATE agents SET last_seen_at = ? WHERE id = ?", (now(), agent["id"]))
+            payload = body if isinstance(body, dict) else {"text": str(body)[:5000]}
+            if len(json.dumps(payload)) > 20000:
+                payload = {"truncated": True, "text": json.dumps(payload)[:5000]}
+            # Webhooks dürfen immer an "todo" senden - der Besitzer hat die URL bewusst erzeugt
+            webhook_agent = dict(agent)
+            webhook_agent["scopes"] = ",".join(sorted(set(agent["scopes"].split(",")) | {"send"}))
+            msg = send_message(conn, agent["user_id"], webhook_agent, MessageSend(
+                to=OWNER, kind="text", content=_webhook_summary(body, request), payload=payload))
+            return {"ok": True, "id": msg["id"]}
+
+    return await asyncio.to_thread(handle)
+
+
 @router.delete("/agents/{agent_id}", status_code=204)
 def delete_agent(agent_id: int, request: Request, auth: Auth = Depends(get_auth),
                  conn: sqlite3.Connection = Depends(get_db)):
@@ -231,7 +327,17 @@ def list_messages(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Dep
         args.append(before_id)
     q += " ORDER BY id DESC LIMIT ?"
     args.append(limit)
-    return {"messages": [msg_out(r) for r in conn.execute(q, args)]}
+    msgs = [msg_out(r) for r in conn.execute(q, args)]
+    if msgs:  # Zustellung an Geräte (Nachrichten an "todo")
+        ids = [m["id"] for m in msgs]
+        marks = ",".join("?" * len(ids))
+        deliveries: dict[int, list] = {}
+        for d in conn.execute(f"SELECT m.bus_message_id, d.name, m.delivered_at FROM device_messages m JOIN devices d ON d.id = m.device_id "
+                              f"WHERE m.bus_message_id IN ({marks}) ORDER BY m.id", ids):
+            deliveries.setdefault(d["bus_message_id"], []).append({"device": d["name"], "delivered_at": d["delivered_at"]})
+        for m in msgs:
+            m["deliveries"] = deliveries.get(m["id"], [])
+    return {"messages": msgs}
 
 
 def _set_result(conn: sqlite3.Connection, row: sqlite3.Row, body: ResultIn) -> dict:
@@ -257,6 +363,15 @@ def ack_owner_task(message_id: int, body: ResultIn, auth: Auth = Depends(get_aut
     return _set_result(conn, row, body)
 
 
+class AnswerIn(BaseModel):
+    text: str = Field(min_length=1, max_length=500)
+
+
+@router.post("/messages/{message_id}/answer")
+def answer(message_id: int, data: AnswerIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    return answer_question(conn, auth.id, message_id, data.text.strip(), via="web")
+
+
 @router.get("/stream")
 async def ui_stream(request: Request, auth: Auth = Depends(get_auth)):
     return await sse("user", auth.id, request)
@@ -273,7 +388,9 @@ def inbox(agent: sqlite3.Row = Depends(get_agent), conn: sqlite3.Connection = De
         args.append(status)
     q += " ORDER BY id LIMIT ?"
     args.append(limit)
-    return {"messages": [msg_out(r) for r in conn.execute(q, args)]}
+    rows = conn.execute(q, args).fetchall()
+    conn.executemany("UPDATE messages SET delivered_at = ? WHERE id = ? AND delivered_at IS NULL", [(now(), r["id"]) for r in rows])
+    return {"messages": [msg_out(r) for r in rows]}
 
 
 @router.post("/agent/messages", status_code=201)

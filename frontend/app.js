@@ -20,6 +20,7 @@ const ICONS = {
   bell: '<path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 21a2 2 0 004 0"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/>', out: '<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>', more: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
+  link: '<path d="M10 14a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 10a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/>', bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
   moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>', pin: '<path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>', lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>', share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', tag: '<path d="M3 12V4a1 1 0 011-1h8l9 9-9 9z"/><path d="M7.5 7.5h.01"/>', repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 01-3 3H3"/>', filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
@@ -785,10 +786,12 @@ function viewBus(view) {
   view.appendChild(h('details', { class: 'glass card' }, h('summary', {}, 'So verbindest du ein Projekt'),
     h('div', { class: 'col', style: 'margin-top:12px' }, h('p', { class: 'muted small' }, 'Jeder Agent hat einen eigenen Key (Header X-Agent-Key). Beispiele:'),
       h('pre', { class: 'code' }, apiExamples()))));
+  view.appendChild(h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Regeln'), btn('Regel', 'sm', () => ruleSheet(), 'plus')));
+  view.appendChild(h('div', { id: 'rules', class: 'col' }));
   view.appendChild(sendForm());
   view.appendChild(h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Log'), h('select', { id: 'log-filter', style: 'width:auto', 'aria-label': 'Filter', onchange: guard(loadMessages) }, h('option', { value: '' }, 'Alle'))));
   view.appendChild(h('div', { id: 'log', class: 'col' }));
-  refreshAgents().then(loadMessages);
+  refreshAgents().then(loadMessages); refreshRules();
 }
 function apiExamples() {
   const o = location.origin;
@@ -815,7 +818,12 @@ curl -X POST ${o}/api/agent-bus/agent/messages -H "X-Agent-Key: tdo_…" \\
   -H "Content-Type: application/json" -d '{"to":"todo","kind":"task","task_type":"device.notify",
   "payload":{"device":"Pixel 8","title":"Build fertig","body":"main ist grün","url":"/#/bus"}}'
 
-# Task-Typen: todo.create, todo.list, todo.complete, device.notify`;
+# Rückfrage an dich (Antwort per Benachrichtigung oder Web, Ergebnis via /inbox/stream "result")
+curl -X POST ${o}/api/agent-bus/agent/messages -H "X-Agent-Key: tdo_…" \\
+  -H "Content-Type: application/json" -d '{"to":"todo","kind":"task","task_type":"ask",
+  "payload":{"question":"Produktion deployen?","options":["Ja","Nein"]}}'
+
+# Task-Typen: todo.create, todo.list, todo.complete, device.notify, ask`;
 }
 const refreshAgents = guard(async () => {
   state.agents = (await api('/agent-bus/agents')).agents;
@@ -823,9 +831,10 @@ const refreshAgents = guard(async () => {
   if (!state.agents.length) box.appendChild(h('div', { class: 'empty glass' }, icon('bus'), h('div', {}, 'Noch keine Agents. Lege einen an, um ein Projekt anzubinden.')));
   state.agents.forEach((a) => box.appendChild(h('div', { class: 'glass card col', style: 'gap:10px' },
     h('div', { class: 'row' }, h('div', { class: 'avatar' }, a.name[0]), h('div', { class: 'grow' }, h('h3', {}, a.name), h('div', { class: 'muted small' }, a.description || 'Keine Beschreibung')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Webhook', title: a.webhook ? 'Webhook-URL erneuern' : 'Webhook-URL erzeugen', onclick: () => webhookSheet(a) }, icon('link')),
       h('button', { class: 'icon-btn', 'aria-label': 'Neuen Key erzeugen', title: 'Key rotieren', onclick: guard(async () => { if (!confirm('Neuen Key erzeugen? Der alte wird sofort ungültig.')) return; keySheet(a.name, (await api(`/agent-bus/agents/${a.id}/rotate`, { method: 'POST' })).api_key); }) }, icon('key')),
       h('button', { class: 'icon-btn', 'aria-label': 'Agent löschen', onclick: guard(async () => { if (!confirm(`Agent „${a.name}“ löschen?`)) return; await api('/agent-bus/agents/' + a.id, { method: 'DELETE' }); refreshAgents(); }) }, icon('trash'))),
-    h('div', { class: 'row wrap' }, a.scopes.map((s) => h('span', { class: 'chip' }, s)), h('span', { class: 'chip' }, a.key_prefix + '…'), h('span', { class: 'chip' }, a.last_seen_at ? 'zuletzt ' + fmtTs(a.last_seen_at) : 'noch nie verbunden')))));
+    h('div', { class: 'row wrap' }, a.scopes.map((s) => h('span', { class: 'chip' }, s)), h('span', { class: 'chip' }, a.key_prefix + '…'), a.webhook ? h('span', { class: 'chip dotted ok' }, 'Webhook aktiv') : null, h('span', { class: 'chip' }, a.last_seen_at ? 'zuletzt ' + fmtTs(a.last_seen_at) : 'noch nie verbunden')))));
   const f = $('#log-filter');
   if (f) { const cur = f.value; clear(f); f.appendChild(h('option', { value: '' }, 'Alle')); state.agents.forEach((a) => f.appendChild(h('option', { value: a.name, selected: a.name === cur }, a.name))); }
   const to = $('#send-to');
@@ -884,6 +893,73 @@ const loadMessages = guard(async () => {
   state.messages = (await api('/agent-bus/messages' + (f && f.value ? '?agent=' + encodeURIComponent(f.value) : ''))).messages;
   renderLog();
 });
+function webhookSheet(a) {
+  const close = sheet(h('div', { class: 'col' }, h('h2', {}, 'Webhook für „' + a.name + '“'),
+    h('p', { class: 'muted small' }, 'Dienste wie GitHub, Uptime Kuma, Home Assistant oder Grafana posten an diese URL – ganz ohne Agent-Key. Jede Meldung landet im Log und kann Regeln auslösen. Die URL ist das Geheimnis: Sie wird nur jetzt angezeigt.'),
+    h('div', { class: 'row wrap' },
+      btn(a.webhook ? 'Neue URL erzeugen (alte wird ungültig)' : 'URL erzeugen', 'primary', guard(async () => {
+        const { url } = await api(`/agent-bus/agents/${a.id}/webhook`, { method: 'POST' });
+        close(); keySheet(a.name + ' (Webhook)', url); refreshAgents();
+      }), 'link'),
+      a.webhook ? btn('Webhook ausschalten', 'danger', guard(async () => { await api(`/agent-bus/agents/${a.id}/webhook`, { method: 'DELETE' }); close(); refreshAgents(); })) : null,
+      btn('Abbrechen', '', () => close())),
+    h('pre', { class: 'code' }, `# Beispiel
+curl -X POST "<Webhook-URL>" -H "Content-Type: application/json" -d '{"text":"Backup fehlgeschlagen"}'
+# Titel auch per Query: <Webhook-URL>?title=Deploy%20fertig`)));
+}
+
+const refreshRules = guard(async () => {
+  const box = $('#rules'); if (!box) return;
+  const { rules } = await api('/rules'); clear(box);
+  if (!rules.length) { box.appendChild(h('div', { class: 'muted small' }, 'Keine Regeln. Beispiel: „Wenn kuma ‚down‘ meldet → Aufgabe mit hoher Priorität + Nachricht aufs Handy“.')); return; }
+  rules.forEach((r) => {
+    const sw = h('button', { class: 'switch' + (r.enabled ? ' on' : ''), role: 'switch', 'aria-checked': String(r.enabled), 'aria-label': 'Regel aktiv',
+      onclick: guard(async () => { await api('/rules/' + r.id, { method: 'PATCH', body: { enabled: !r.enabled } }); refreshRules(); }) });
+    const m = r.match, a = r.action;
+    const cond = [m.agent ? 'von ' + m.agent : 'von jedem Agent', m.kind !== 'any' ? (m.kind === 'text' ? 'Text' : 'Task') : null,
+      m.task_type ? 'Typ ' + m.task_type : null, m.contains ? `enthält „${m.contains}“` : null].filter(Boolean).join(', ');
+    const act = a.type === 'create_todo' ? `Aufgabe „${a.title}“` + (a.priority ? ` (Priorität ${['', 'Niedrig', 'Mittel', 'Hoch'][a.priority]})` : '')
+      : `Nachricht an ${a.device || 'alle Geräte'}${a.urgent ? ' (dringend)' : ''}`;
+    box.appendChild(h('div', { class: 'glass card row', style: 'align-items:flex-start' }, h('span', { class: 'muted', style: 'padding-top:2px' }, icon('bolt')),
+      h('div', { class: 'grow col', style: 'gap:4px' }, h('strong', {}, r.name), h('div', { class: 'small muted' }, 'Wenn ' + cond), h('div', { class: 'small' }, '→ ' + act),
+        h('div', { class: 'small muted' }, r.fire_count ? `${r.fire_count}× ausgelöst, zuletzt ${fmtTs(r.last_fired_at)}` : 'noch nicht ausgelöst')),
+      sw, h('button', { class: 'icon-btn', 'aria-label': 'Regel löschen', onclick: guard(async () => { if (!confirm(`Regel „${r.name}“ löschen?`)) return; await api('/rules/' + r.id, { method: 'DELETE' }); refreshRules(); }) }, icon('trash'))));
+  });
+});
+
+function ruleSheet() {
+  const name = h('input', { type: 'text', maxlength: 60, placeholder: 'z. B. Server-Ausfall', required: true });
+  const agentSel = h('select', { 'aria-label': 'Agent' }, h('option', { value: '' }, 'Jeder Agent'), state.agents.map((a) => h('option', { value: a.name }, a.name)));
+  const kind = h('select', { 'aria-label': 'Art' }, [['any', 'Text oder Task'], ['text', 'Nur Text'], ['task', 'Nur Task']].map(([v, l]) => h('option', { value: v }, l)));
+  const contains = h('input', { type: 'text', maxlength: 200, placeholder: 'enthält … (z. B. down, error)' });
+  const taskType = h('input', { type: 'text', maxlength: 64, placeholder: 'Task-Typ (optional)' });
+  const type = h('select', { 'aria-label': 'Aktion' }, h('option', { value: 'create_todo' }, 'Aufgabe anlegen'), h('option', { value: 'notify' }, 'Nachricht an Gerät(e)'));
+  const title = h('input', { type: 'text', maxlength: 300, value: '{agent}: {content}' });
+  const body = h('input', { type: 'text', maxlength: 500, placeholder: 'Text/Notiz (optional), Platzhalter möglich' });
+  let prio = 2;
+  const prioBox = prioSeg(prio, (p) => { prio = p; });
+  const tags = h('input', { type: 'text', placeholder: 'Tags, z. B. ops' });
+  const devSel = h('select', { 'aria-label': 'Gerät' }, h('option', { value: '' }, 'Alle Geräte'));
+  api('/devices').then(({ devices }) => devices.forEach((d) => devSel.appendChild(h('option', { value: d.name }, d.name)))).catch(() => {});
+  const urgent = h('input', { type: 'checkbox' });
+  const todoBox = h('div', { class: 'col' }, h('div', { class: 'field' }, 'Priorität', prioBox), h('label', { class: 'field' }, 'Tags', tags));
+  const notifyBox = h('div', { class: 'col hidden' }, h('label', { class: 'field' }, 'Gerät', devSel), h('label', { class: 'row small muted' }, urgent, 'Dringend (auch in der Ruhezeit)'));
+  type.addEventListener('change', () => { todoBox.classList.toggle('hidden', type.value !== 'create_todo'); notifyBox.classList.toggle('hidden', type.value !== 'notify'); });
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    await api('/rules', { method: 'POST', body: { name: name.value.trim(),
+      match: { agent: agentSel.value, kind: kind.value, contains: contains.value.trim(), task_type: taskType.value.trim() },
+      action: { type: type.value, title: title.value.trim() || '{content}', body: body.value.trim(), priority: prio,
+        tags: tags.value.split(/[,\s]+/).map((x) => x.replace(/^#/, '')).filter(Boolean), device: devSel.value, urgent: urgent.checked } } });
+    close(); refreshRules(); toast('Regel gespeichert', 'ok');
+  }) }, h('h2', {}, 'Neue Regel'), h('label', { class: 'field' }, 'Name', name),
+  h('div', { class: 'field' }, 'Wenn …', h('div', { class: 'search-grid' }, agentSel, kind), contains, taskType),
+  h('div', { class: 'field' }, '… dann', type), h('label', { class: 'field' }, 'Titel (Platzhalter: {agent} {content} {task_type} {payload.feld})', title),
+  h('label', { class: 'field' }, 'Text', body), todoBox, notifyBox,
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, 'Speichern'))));
+  name.focus();
+}
+
 function renderLog() {
   const box = $('#log'); if (!box) return; clear(box);
   const f = $('#log-filter');
@@ -897,8 +973,22 @@ function renderLog() {
       m.content ? h('div', {}, m.content) : null,
       m.payload ? h('pre', {}, JSON.stringify(m.payload, null, 2)) : null,
       m.result ? h('pre', {}, '→ ' + JSON.stringify(m.result, null, 2)) : null,
+      (m.rules_fired || []).length || (m.deliveries || []).length || m.delivered_at ? h('div', { class: 'row wrap', style: 'gap:6px' },
+        (m.rules_fired || []).map((r) => h('span', { class: 'chip' }, icon('bolt'), r)),
+        (m.deliveries || []).map((d) => h('span', { class: 'chip dotted ' + (d.delivered_at ? 'ok' : 'warn') }, d.device + (d.delivered_at ? ' · ' + fmtTs(d.delivered_at) : ' · ausstehend'))),
+        m.delivered_at ? h('span', { class: 'chip dotted ok' }, 'abgeholt ' + fmtTs(m.delivered_at)) : null) : null,
+      incoming && m.task_type === 'ask' && m.status === 'pending' ? answerBox(m) :
       incoming && m.kind === 'task' && ['pending', 'in_progress'].includes(m.status) ? h('div', { class: 'row' }, btn('Erledigt', 'sm', guard(async () => { await api(`/agent-bus/messages/${m.id}/ack`, { method: 'POST', body: { status: 'completed' } }); }), 'check'), btn('Ablehnen', 'sm danger', guard(async () => { await api(`/agent-bus/messages/${m.id}/ack`, { method: 'POST', body: { status: 'failed' } }); }))) : null));
   });
+}
+
+function answerBox(m) {
+  const p = m.payload || {};
+  const input = h('input', { type: 'text', maxlength: 500, placeholder: 'Antwort …' });
+  const send = (text) => guard(async () => { if (!text.trim()) return; await api(`/agent-bus/messages/${m.id}/answer`, { method: 'POST', body: { text: text.trim() } }); toast('Antwort gesendet', 'ok'); })();
+  return h('div', { class: 'col', style: 'gap:8px' }, p.question ? h('strong', {}, p.question) : null,
+    (p.options || []).length ? h('div', { class: 'row wrap' }, p.options.slice(0, 3).map((o) => btn(String(o), 'sm', () => send(String(o))))) : null,
+    h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); send(input.value); } }, input, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Antworten' }, icon('send'))));
 }
 
 // ------------------------------------------------------------------ Assistent

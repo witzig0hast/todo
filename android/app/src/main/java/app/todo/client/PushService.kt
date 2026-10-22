@@ -167,7 +167,9 @@ class PushService : Service() {
         if (id < 0) return
         val url = msg.optString("url").takeIf { it.startsWith("/") && !it.startsWith("//") }
         val actionToken = if (msg.isNull("action_token")) null else msg.optString("action_token").ifBlank { null }
-        val shown = Notifier.show(this, id, msg.optString("title", "Todo"), msg.optString("body", ""), url, actionToken)
+        val replyToken = if (msg.isNull("reply_token")) null else msg.optString("reply_token").ifBlank { null }
+        val options = msg.optJSONArray("options")?.let { arr -> (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() } } ?: emptyList()
+        val shown = Notifier.show(this, id, msg.optString("title", "Todo"), msg.optString("body", ""), url, actionToken, replyToken, options)
         if (!shown) return // Benachrichtigungen aus: nicht bestätigen, der Server liefert später erneut
         try {
             val ack = Request.Builder()
