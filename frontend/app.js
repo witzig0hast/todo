@@ -174,11 +174,12 @@ function renderAuth(root, sso = { providers: [], local_auth: true }, ssoCode = n
       const r = await api(mode === 'login' ? '/auth/login' : '/auth/register', { method: 'POST', body: { username: user.value, password: pw.value }, noAuthRedirect: true });
       if (mode === 'register' && r.status === 'pending') {
         err.className = 'error notice'; err.textContent = 'Registriert! Ein Administrator muss dein Konto noch freigeben.'; setMode('login'); err.className = 'error notice'; err.textContent = 'Registriert! Ein Administrator muss dein Konto noch freigeben.'; pw.value = '';
-      } else { boot(); }
+      } else if (r.twofa_required) { renderTwoFactor(root, r.ticket); } else { boot(); }
     } catch (ex) { err.textContent = ex.message; } finally { submit.disabled = false; }
   } },
   h('div', { style: 'text-align:center' }, h('div', { class: 'logo' }, icon('check')), title, sub),
-  ssoButtons, ssoButtons.length > 0 && local ? h('div', { class: 'divider' }, h('span', {}, 'oder')) : null,
+  ssoButtons, local && window.PublicKeyCredential ? h('button', { type: 'button', class: 'btn', onclick: () => passkeyLogin(err) }, icon('key'), 'Mit Passkey anmelden') : null,
+  (ssoButtons.length > 0 || window.PublicKeyCredential) && local ? h('div', { class: 'divider' }, h('span', {}, 'oder')) : null,
   local ? [fieldUser, fieldPw] : null, err, local ? submit : null, local ? toggleRow : null);
   setMode('login');
   if (!local) sub.textContent = 'Melde dich mit deinem Single-Sign-On-Konto an.';
@@ -213,6 +214,55 @@ function renderChoose(root, info) {
   h('div', { class: 'row', style: 'justify-content:center' }, btn('Abbrechen', 'sm', guard(async () => { await api('/auth/sso/pending', { method: 'DELETE', noAuthRedirect: true }); boot(); }))));
   root.appendChild(h('div', { class: 'auth' }, h('div', { class: 'auth-card glass' }, form)));
   user.focus();
+}
+
+function renderTwoFactor(root, ticket) {
+  clear(root);
+  const err = h('div', { class: 'error', role: 'alert' });
+  const code = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 40, placeholder: '123456', 'aria-label': 'Code' });
+  const submit = h('button', { class: 'btn primary', type: 'submit' }, 'Bestätigen');
+  root.appendChild(h('div', { class: 'auth' }, h('div', { class: 'auth-card glass' }, h('form', { class: 'col', onsubmit: async (e) => {
+    e.preventDefault(); err.textContent = ''; submit.disabled = true;
+    try {
+      const r = await api('/auth/login/2fa', { method: 'POST', body: { ticket, code: code.value }, noAuthRedirect: true });
+      if (r.used_recovery) setTimeout(() => toast(`Wiederherstellungscode verwendet – noch ${r.recovery_left} übrig.`), 800);
+      boot();
+    } catch (ex) { err.textContent = ex.message; code.select(); if (/abgelaufen/.test(ex.message)) setTimeout(boot, 1500); } finally { submit.disabled = false; }
+  } },
+  h('div', { style: 'text-align:center' }, h('div', { class: 'logo' }, icon('lock')), h('h1', {}, 'Bestätigung'), h('p', { class: 'muted small' }, 'Gib den 6-stelligen Code aus deiner Authenticator-App ein – oder einen Wiederherstellungscode.')),
+  h('label', { class: 'field' }, 'Code', code), err, submit, h('div', { class: 'row', style: 'justify-content:center' }, btn('Zurück', 'sm', () => boot()))))));
+  code.focus();
+}
+
+// ------------------------------------------------------------------ Passkeys (WebAuthn)
+const b64uToBuf = (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)).buffer;
+const bufToB64u = (b) => btoa(String.fromCharCode(...new Uint8Array(b))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+function credToJSON(c) {
+  const r = c.response, out = { id: c.id, rawId: bufToB64u(c.rawId), type: c.type, clientExtensionResults: c.getClientExtensionResults ? c.getClientExtensionResults() : {}, response: { clientDataJSON: bufToB64u(r.clientDataJSON) } };
+  if (c.authenticatorAttachment) out.authenticatorAttachment = c.authenticatorAttachment;
+  if (r.attestationObject) { out.response.attestationObject = bufToB64u(r.attestationObject); out.response.transports = r.getTransports ? r.getTransports() : []; }
+  if (r.authenticatorData) { out.response.authenticatorData = bufToB64u(r.authenticatorData); out.response.signature = bufToB64u(r.signature); if (r.userHandle) out.response.userHandle = bufToB64u(r.userHandle); }
+  return out;
+}
+async function passkeyLogin(err) {
+  try {
+    const o = await api('/auth/passkeys/login/options', { method: 'POST', body: {}, noAuthRedirect: true });
+    o.challenge = b64uToBuf(o.challenge);
+    (o.allowCredentials || []).forEach((c) => { c.id = b64uToBuf(c.id); });
+    const cred = await navigator.credentials.get({ publicKey: o });
+    await api('/auth/passkeys/login/verify', { method: 'POST', body: { credential: credToJSON(cred) }, noAuthRedirect: true });
+    boot();
+  } catch (ex) { if (err) { err.className = 'error'; err.textContent = ex.name === 'NotAllowedError' ? 'Passkey-Anmeldung abgebrochen.' : ex.message; } }
+}
+async function passkeyRegister() {
+  const o = await api('/auth/passkeys/register/options', { method: 'POST' });
+  o.challenge = b64uToBuf(o.challenge); o.user.id = b64uToBuf(o.user.id);
+  (o.excludeCredentials || []).forEach((c) => { c.id = b64uToBuf(c.id); });
+  let cred;
+  try { cred = await navigator.credentials.create({ publicKey: o }); }
+  catch (ex) { throw new Error(ex.name === 'NotAllowedError' ? 'Abgebrochen.' : ex.name === 'InvalidStateError' ? 'Dieses Gerät hat bereits einen Passkey.' : ex.message); }
+  const name = (prompt('Name für diesen Passkey:', navigator.userAgentData && navigator.userAgentData.platform ? navigator.userAgentData.platform : 'Passkey') || 'Passkey').slice(0, 60);
+  await api('/auth/passkeys/register/verify', { method: 'POST', body: { name, credential: credToJSON(cred) } });
 }
 
 async function loadAll() {
@@ -1168,6 +1218,8 @@ function viewSettings(view) {
   view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model));
   // Push
   view.appendChild(pushCard());
+  const secBox = h('div', { class: 'glass card col' });
+  view.appendChild(secBox); securityCard(secBox);
   view.appendChild(summaryCard());
   const icsBox = h('div', { class: 'glass card col' });
   view.appendChild(icsBox); icsCard(icsBox);
@@ -1290,6 +1342,60 @@ function deviceSheet(device) {
   title.focus();
 }
 
+const securityCard = guard(async (box) => {
+  const [tf, pks, ses] = await Promise.all([api('/auth/2fa'), api('/auth/passkeys'), api('/auth/sessions')]);
+  clear(box);
+  box.appendChild(h('h3', {}, 'Sicherheit'));
+  // 2FA
+  const tfBox = h('div', { class: 'col', style: 'gap:8px' });
+  const showCodes = (codes) => sheet(h('div', { class: 'col' }, h('h2', {}, 'Wiederherstellungscodes'),
+    h('p', { class: 'muted small' }, 'Jeder Code funktioniert genau einmal, falls du dein Handy verlierst. Jetzt sicher aufbewahren – sie werden nicht erneut angezeigt.'),
+    h('div', { class: 'key-box codes' }, codes.join('\n'))));
+  if (tf.enabled) {
+    const code = h('input', { type: 'text', inputmode: 'numeric', placeholder: 'aktueller Code', maxlength: 40, style: 'max-width:180px' });
+    tfBox.append(h('div', { class: 'row' }, h('span', { class: 'chip dotted ok' }, '2FA aktiv'), h('span', { class: 'small muted' }, `${tf.recovery_left} Wiederherstellungscodes übrig`)),
+      h('div', { class: 'row wrap' }, code,
+        btn('Neue Wiederherstellungscodes', 'sm', guard(async () => { const r = await api('/auth/2fa/recovery', { method: 'POST', body: { code: code.value } }); showCodes(r.recovery_codes); securityCard(box); })),
+        btn('2FA ausschalten', 'sm danger', guard(async () => { if (!confirm('2FA wirklich ausschalten?')) return; await api('/auth/2fa/disable', { method: 'POST', body: { code: code.value } }); toast('2FA ausgeschaltet'); securityCard(box); }))));
+  } else {
+    tfBox.append(h('div', { class: 'row' }, h('span', { class: 'small muted grow' }, 'Zwei-Faktor-Anmeldung mit einer Authenticator-App (z. B. Aegis, 2FAS, Google Authenticator).'),
+      btn('2FA einrichten', 'sm', guard(async () => {
+        const s = await api('/auth/2fa/setup', { method: 'POST' });
+        const code = h('input', { type: 'text', inputmode: 'numeric', autocomplete: 'one-time-code', maxlength: 6, placeholder: '123456' });
+        const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+          e.preventDefault();
+          const r = await api('/auth/2fa/enable', { method: 'POST', body: { code: code.value } });
+          close(); showCodes(r.recovery_codes); securityCard(box); toast('2FA aktiviert – andere Geräte wurden abgemeldet.', 'ok');
+        }) }, h('h2', {}, '2FA einrichten'), h('p', { class: 'muted small' }, '1. QR-Code mit der Authenticator-App scannen (oder Schlüssel abtippen). 2. Den angezeigten Code eingeben.'),
+        h('div', { class: 'qr' }, h('img', { src: s.qr_svg, alt: 'QR-Code für die Authenticator-App', width: 200, height: 200 })),
+        h('div', { class: 'key-box' }, s.secret.replace(/(.{4})/g, '$1 ').trim()),
+        h('label', { class: 'field' }, 'Code aus der App', code), h('button', { class: 'btn primary', type: 'submit' }, 'Aktivieren')));
+        code.focus();
+      }), 'lock')));
+  }
+  box.appendChild(h('div', { class: 'field' }, 'Zwei-Faktor-Anmeldung', tfBox));
+  // Passkeys
+  const pkBox = h('div', { class: 'col', style: 'gap:6px' });
+  pks.passkeys.forEach((p) => pkBox.appendChild(h('div', { class: 'row' }, icon('key'), h('div', { class: 'grow' }, h('div', {}, p.name), h('div', { class: 'small muted' }, 'hinzugefügt ' + fmtTs(p.created_at) + (p.last_used_at ? ' · zuletzt ' + fmtTs(p.last_used_at) : ''))),
+    h('button', { class: 'icon-btn', 'aria-label': 'Passkey löschen', onclick: guard(async () => { if (!confirm(`Passkey „${p.name}“ löschen?`)) return; await api('/auth/passkeys/' + p.id, { method: 'DELETE' }); securityCard(box); }) }, icon('trash')))));
+  if (!pks.passkeys.length) pkBox.appendChild(h('div', { class: 'small muted' }, 'Anmelden per Fingerabdruck, Gesicht oder Geräte-PIN – ohne Passwort.'));
+  if (window.PublicKeyCredential) pkBox.appendChild(h('div', {}, btn('Passkey hinzufügen', 'sm', guard(async () => { await passkeyRegister(); toast('Passkey gespeichert', 'ok'); securityCard(box); }), 'plus')));
+  else pkBox.appendChild(h('div', { class: 'small muted' }, 'Dieser Browser unterstützt keine Passkeys.'));
+  box.appendChild(h('div', { class: 'field' }, 'Passkeys', pkBox));
+  // Sitzungen
+  const sBox = h('div', { class: 'col', style: 'gap:6px' });
+  const agent = (ua) => { ua = ua || ''; const os = /Android/.test(ua) ? 'Android' : /iPhone|iPad/.test(ua) ? 'iOS' : /Windows/.test(ua) ? 'Windows' : /Mac OS/.test(ua) ? 'macOS' : /Linux/.test(ua) ? 'Linux' : 'Gerät';
+    const br = /TodoAndroid/.test(ua) ? 'Todo-App' : /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser'; return `${br} · ${os}`; };
+  ses.sessions.forEach((x) => sBox.appendChild(h('div', { class: 'row' }, h('div', { class: 'grow' }, h('div', {}, agent(x.user_agent), x.current ? h('span', { class: 'chip', style: 'margin-left:6px' }, 'dieses Gerät') : null),
+    h('div', { class: 'small muted' }, [x.ip, x.last_seen_at ? 'aktiv ' + fmtTs(x.last_seen_at) : 'angemeldet ' + fmtTs(x.created_at)].filter(Boolean).join(' · '))),
+    x.current ? null : btn('Abmelden', 'sm', guard(async () => { await api('/auth/sessions/' + x.id, { method: 'DELETE' }); securityCard(box); })))));
+  if (ses.sessions.length > 1) sBox.appendChild(h('div', {}, btn('Alle anderen abmelden', 'sm danger', guard(async () => { await api('/auth/sessions/revoke-others', { method: 'POST' }); securityCard(box); toast('Andere Geräte abgemeldet', 'ok'); }))));
+  box.appendChild(h('div', { class: 'field' }, 'Angemeldete Geräte', sBox));
+  // Export
+  box.appendChild(h('div', { class: 'field' }, 'Deine Daten', h('div', { class: 'row wrap' },
+    h('a', { class: 'btn sm', href: '/api/export?format=json', download: '' }, 'Export (JSON, komplett)'), h('a', { class: 'btn sm', href: '/api/export?format=csv', download: '' }, 'Aufgaben als CSV'))));
+});
+
 const icsCard = guard(async (box) => {
   const { enabled } = await api('/calendar/feed');
   clear(box);
@@ -1380,6 +1486,15 @@ function viewAdmin(view) {
   view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Administration'), h('div', { class: 'muted small' }, 'Benutzer freigeben und verwalten'))));
   const users = h('div', { class: 'col' }), audit = h('div', { class: 'col', style: 'gap:4px' });
   view.appendChild(users);
+  const bBox = h('div', { class: 'glass card col' });
+  view.appendChild(bBox);
+  const loadBackups = guard(async () => {
+    const { backups, keep } = await api('/admin/backups'); clear(bBox);
+    bBox.appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Backups'), btn('Jetzt sichern', 'sm', guard(async () => { await api('/admin/backups', { method: 'POST' }); toast('Backup erstellt', 'ok'); loadBackups(); }))));
+    bBox.appendChild(h('div', { class: 'small muted' }, `Täglich automatisch, die letzten ${keep} werden aufbewahrt (Volume /data/backups). Anhänge liegen unter /data/attachments – das ganze Volume sichern.`));
+    backups.slice(0, 10).forEach((b) => bBox.appendChild(h('div', { class: 'row small' }, h('span', { class: 'grow' }, b.name), h('span', { class: 'muted' }, fmtSize(b.size)), h('a', { class: 'btn sm', href: '/api/admin/backups/' + b.name, download: '' }, 'Laden'))));
+  });
+  loadBackups();
   view.appendChild(h('details', { class: 'glass card', ontoggle: (e) => e.target.open && loadAudit() }, h('summary', {}, 'Protokoll (letzte 200 Einträge)'), h('div', { style: 'margin-top:10px' }, audit)));
   const act = (u, a, label, cls, ic) => btn(label, 'sm ' + (cls || ''), guard(async () => { if (a === 'delete') { if (!confirm(`„${u.username}“ samt allen Daten löschen?`)) return; await api('/admin/users/' + u.id, { method: 'DELETE' }); } else await api(`/admin/users/${u.id}/${a}`, { method: 'POST' }); await loadUsers(); }), ic);
   const loadUsers = guard(async () => {

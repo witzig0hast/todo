@@ -9,28 +9,49 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
   Admin sie freigibt (Admin-Bereich: freigeben, ablehnen, sperren, Rolle ändern, löschen, Protokoll).
 - **Single Sign-On (OpenID Connect):** Anmeldung über **Authentik** oder jeden anderen OIDC-Anbieter (Keycloak, Authelia,
   Google, Microsoft, ...), auch mehrere gleichzeitig. Siehe Abschnitt „Single Sign-On“.
-- **Aufgaben:** Listen, Prioritäten, Fälligkeit, Notizen, Unteraufgaben, Wisch-Gesten (rechts = erledigt, links = löschen),
-  Tastaturkürzel (`n` oder `/` = neue Aufgabe, `Esc` = Details schließen).
-- **Ollama:** Freitext → Aufgabe („morgen 15 Uhr Zahnarzt anrufen“), Aufgabe in Unteraufgaben zerlegen,
-  Tagesplan, Chat-Assistent (nur lesend – er kann nichts verändern). KI-Ergebnisse sind immer Vorschläge, die du bestätigst.
-  Das Modell ist pro Benutzer wählbar.
+- **Aufgaben:** Listen, Prioritäten, Fälligkeit, Notizen, Unteraufgaben, **Tags** (`#tag` im Titel), **Wiederholung**
+  (täglich/wöchentlich/monatlich/jährlich, Wochentage, „nach Erledigung“ – in deiner Zeitzone, sommerzeitfest),
+  **mehrere Erinnerungen** pro Aufgabe, **Schlummern** (10 Min. bis morgen früh), **Suche**, **gespeicherte Filter**,
+  **Kalenderansicht**, **Anhänge** (Bilder, PDF, Text, bis 10 MB), **Standort-Erinnerungen** (Android-App),
+  Wisch-Gesten (rechts = erledigt, links = löschen), Tastaturkürzel (`n` oder `/` = neue Aufgabe, `Esc` = Details schließen).
+- **Geteilte Listen:** Listen per Benutzername mit anderen freigegebenen Benutzern teilen; Änderungen erscheinen live bei allen.
+- **Kalender-Abo (ICS):** geheimer Link für Handy-, Thunderbird-, Outlook- oder Nextcloud-Kalender (jederzeit neu erzeugbar/widerrufbar).
+- **Ollama:** Freitext → Aufgabe(n) („morgen 15 Uhr Zahnarzt anrufen und Milch kaufen“ ergibt zwei Aufgaben),
+  Unteraufgaben vorschlagen, Tagesplan, Chat-Assistent. Der Assistent kann **Aktionen vorschlagen** (anlegen, erledigen,
+  verschieben, ...), ausgeführt wird erst nach deiner Bestätigung. **Morgen-Zusammenfassung** als Benachrichtigung zur
+  gewünschten Uhrzeit. Das Modell ist pro Benutzer wählbar.
 - **Whisper:** Mikrofon-Button → Aufnahme wird im Browser in 16-kHz-WAV umgewandelt, das Backend spricht per
-  Wyoming-Protokoll mit deinem `wyoming-whisper` (Port 10300) → Text → KI-Vorschlag. Audio wird nie gespeichert.
+  Wyoming-Protokoll mit deinem `wyoming-whisper` (Port 10300) → Text → KI-Vorschlag. Funktioniert auch für **Sprachbefehle**
+  („erledige Zahnarzt“) und Diktat mehrerer Aufgaben. Audio wird nie gespeichert.
+- **Mail → Aufgabe:** pro Benutzer ein IMAP-Postfach (TLS/STARTTLS), Betreff = Titel, Text = Notizen; nur Mails von erlaubten
+  Absendern werden übernommen. Das Passwort liegt verschlüsselt in `/data`. Am besten ein eigenes Postfach dafür anlegen.
 - **Agent Bus** (Konzept aus [ownai](https://github.com/witzig0hast/ownai)): pro Benutzer eigene Agents mit eigenem
   API-Key (`X-Agent-Key`, nur als SHA-256-Hash gespeichert, rotierbar), Rechte pro Agent (`send`, `todos:read`,
-  `todos:write`), Text-Nachrichten und Tasks mit Status, Posteingang per Polling **oder Live-Stream (SSE)**,
-  vollständiges Log im UI. Nachrichten an `todo` lösen eine Push-Benachrichtigung aus. Eingebaute Task-Typen:
-  `todo.create`, `todo.list`, `todo.complete`.
-- **Push:** Fälligkeits-Erinnerungen, Agent-Nachrichten, neue Registrierungen (an Admins) – Web-Push mit VAPID
-  (Schlüssel werden beim ersten Start in `/data` erzeugt).
-- **PWA:** installierbar, App-Shell offline, Manifest + Icons (inkl. maskable). Hell/Dunkel automatisch.
+  `todos:write`, `notify`), Text-Nachrichten und Tasks mit Status, Posteingang per Polling **oder Live-Stream (SSE)**,
+  vollständiges Log mit **Zustellstatus** im UI. Eingebaute Task-Typen: `todo.create`, `todo.list`, `todo.complete`,
+  `device.notify`. Dazu **Webhooks** (eingehende URL pro Agent, z. B. für GitHub, Uptime Kuma, Home Assistant),
+  **Regeln** („wenn Agent X `failed` meldet → Aufgabe anlegen / Gerät benachrichtigen“) und **Rückfragen**, die du direkt aus
+  der Benachrichtigung beantwortest (Task-Typ `ask`, bis zu 3 Antwort-Knöpfe oder Freitext).
+- **Push:** Fälligkeits-Erinnerungen mit Knöpfen **Erledigt/Später**, Agent-Nachrichten, neue Registrierungen (an Admins) –
+  Web-Push mit VAPID (Schlüssel werden beim ersten Start in `/data` erzeugt).
+- **Android-App** (`android/`): Nachrichten an einzelne Geräte, Aktionen und Antworten direkt in der Benachrichtigung,
+  **Ruhezeiten pro Gerät** (dringende Nachrichten kommen trotzdem), **App-Sperre per Fingerabdruck**, Standort-Erinnerungen,
+  „Teilen mit Todo“ aus anderen Apps. Details: [`android/README.md`](android/README.md).
+- **Sicherheit fürs Konto:** **Zwei-Faktor-Anmeldung (TOTP)** mit QR-Code und 10 Wiederherstellungscodes, **Passkeys**
+  (Fingerabdruck/Face ID/Sicherheitsschlüssel, Anmeldung ohne Passwort), Liste aller **angemeldeten Geräte** mit Abmelden
+  einzeln oder „alle anderen“.
+- **Backup & Export:** tägliches SQLite-Backup nach `/data/backups` (die letzten `BACKUP_KEEP`, Standard 14), manuell im
+  Admin-Bereich auslösbar und herunterladbar; jeder Benutzer kann seine Daten als JSON oder CSV exportieren.
+- **PWA:** installierbar, App-Shell offline, Manifest + Icons (inkl. maskable), Teilen-Ziel. Hell/Dunkel automatisch.
 
 ## Sicherheit
 
 argon2-Passwort-Hashes · Sitzungen als `HttpOnly`/`Secure`/`SameSite=Strict`-Cookie (nur Hash in der DB) ·
 CSRF-Token + Origin-Prüfung · Rate-Limits (Login pro Konto/IP mit Sperre, Registrierung, KI, Sprache) ·
 strikte CSP (kein Inline-Script/-Style), HSTS, `X-Frame-Options`, `nosniff` · jede Abfrage ist auf den Besitzer
-beschränkt · Größenlimits für Anfragen und Audio · Audit-Log · Container: Nicht-Root, `read_only`, `cap_drop: ALL`,
+beschränkt (geteilte Listen nur für Mitglieder) · Größenlimits für Anfragen, Audio und Anhänge · Anhänge werden am Inhalt
+erkannt (kein HTML/SVG) und mit Sandbox-CSP ausgeliefert · TOTP mit Schutz gegen Wiederverwendung, Wiederherstellungscodes nur
+als Hash · Benachrichtigungs-Aktionen über signierte, ablaufende Tokens · Audit-Log · Container: Nicht-Root, `read_only`, `cap_drop: ALL`,
 `no-new-privileges`, nur an `127.0.0.1` gebunden.
 
 ## Single Sign-On
@@ -75,6 +96,19 @@ auf der Anmeldeseite erscheint dann „Mit Authentik anmelden“.
 - SSO-Konten haben zunächst kein Passwort (in den Einstellungen nachträglich festlegbar, nötig zum Trennen der letzten Verknüpfung).
 - `LOCAL_AUTH_ENABLED=false` schaltet Passwort-Login und Registrierung ab (nur wirksam, wenn SSO konfiguriert ist).
 - Abmelden beendet nur die Sitzung in Todo, nicht die beim Anbieter.
+- Die Zwei-Faktor-Abfrage von Todo gilt für die Passwort-Anmeldung. Bei SSO entscheidet der Anbieter über den zweiten Faktor –
+  aktiviere MFA also in Authentik.
+
+## Passkeys & Zwei-Faktor
+
+- **Passkeys** brauchen HTTPS und eine feste Domain: Die App nimmt die Domain aus `PUBLIC_URL` (sonst aus der Anfrage).
+  Ein Passkey gilt nur für genau diese Domain – nach einem Domainwechsel neu anlegen. In der Android-App (WebView) werden
+  Passkeys je nach Android-Version nicht unterstützt; dort Passwort + 2FA oder SSO verwenden, die App-Sperre per
+  Fingerabdruck schützt zusätzlich.
+- **2FA** einrichten unter *Einstellungen → Sicherheit*: QR-Code mit einer Authenticator-App scannen (Aegis, 2FAS, Google
+  Authenticator, ...), Code bestätigen, Wiederherstellungscodes sicher aufbewahren. Beim Einschalten werden alle anderen
+  Sitzungen abgemeldet.
+- **Ausgesperrt?** Ein Wiederherstellungscode funktioniert anstelle des 6-stelligen Codes (jeder nur einmal).
 
 ## Installation
 
@@ -128,6 +162,19 @@ curl -X POST …/api/agent-bus/messages/ID/result -H "X-Agent-Key: tdo_…" \
 
 Agents können sich auch gegenseitig Nachrichten schicken (`"to":"<agent-name>"`, Scope `send`).
 
+```bash
+# Nachricht an ein bestimmtes Android-Gerät (Scope notify); "urgent" ignoriert die Ruhezeit
+curl -X POST …/agent/messages -H "X-Agent-Key: tdo_…" -H "Content-Type: application/json" \
+  -d '{"to":"todo","kind":"task","task_type":"device.notify","payload":{"device":"Pixel","title":"Server","body":"Backup fehlgeschlagen","urgent":true}}'
+
+# Rückfrage, Antwort kommt per Knopf aus der Benachrichtigung zurück (im Posteingang des Agents)
+curl -X POST …/agent/messages -H "X-Agent-Key: tdo_…" -H "Content-Type: application/json" \
+  -d '{"to":"todo","kind":"task","task_type":"ask","payload":{"question":"Update jetzt einspielen?","options":["Ja","Später"]}}'
+
+# Webhook (URL im Agent-Bereich aktivieren) – nimmt beliebiges JSON an, z. B. von GitHub
+curl -X POST https://todo.example.com/api/agent-bus/hook/whk_… -H "Content-Type: application/json" -d '{"text":"Build grün"}'
+```
+
 ## Später als APK
 
 Die Oberfläche ist eine vollwertige PWA (Manifest, Service Worker, maskable Icons, HTTPS, Web-Push). Zwei einfache Wege:
@@ -146,4 +193,6 @@ DATA_DIR=./data COOKIE_SECURE=false FRONTEND_DIR=../frontend uvicorn app.main:ap
 ```
 
 Struktur: `backend/app` (FastAPI + SQLite, ein Worker), `frontend/` (Vanilla-JS-PWA), `deploy/nginx.conf`.
-SQLite (WAL) liegt im Volume `/data`; Backup = Volume sichern.
+SQLite (WAL) liegt im Volume `/data`. Die täglichen Backups liegen im selben Volume – kopiere `/data/backups` zusätzlich
+auf ein anderes System (z. B. `docker cp todo:/data/backups ./todo-backups`). Wiederherstellen: Container stoppen, gewünschte
+`todo-*.db` als `/data/todo.db` ins Volume legen, `todo.db-wal`/`-shm` entfernen, starten.

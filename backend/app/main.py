@@ -7,8 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.staticfiles import StaticFiles
 
-from . import (actions, admin_api, ai_api, assistant, attachments, auth_api, bus, calendar_feed, config, db, devices, events, mailin,
-               push, push_api, rules, sso, todos)
+from . import (actions, admin_api, ai_api, assistant, attachments, auth_api, backup, bus, calendar_feed, config, db, devices, events,
+               mailin, mfa, passkeys, push, push_api, rules, sso, todos)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -59,8 +59,8 @@ def health():
     return {"ok": True}
 
 
-for module in (auth_api, sso, admin_api, todos, attachments, calendar_feed, actions, bus, rules, devices, ai_api, assistant,
-               mailin, push_api):
+for module in (auth_api, mfa, passkeys, sso, admin_api, backup, todos, attachments, calendar_feed, actions, bus, rules, devices,
+               ai_api, assistant, mailin, push_api):
     app.include_router(module.router)
 
 

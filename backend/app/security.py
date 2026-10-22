@@ -122,7 +122,7 @@ def get_auth(request: Request, conn: sqlite3.Connection = Depends(get_db)) -> Au
     if not token:
         raise HTTPException(401, "Nicht angemeldet.")
     row = conn.execute(
-        "SELECT s.csrf, s.token_hash, s.expires_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id "
+        "SELECT s.csrf, s.token_hash, s.expires_at, s.last_seen_at, u.* FROM sessions s JOIN users u ON u.id = s.user_id "
         "WHERE s.token_hash = ?",
         (sha256(token),),
     ).fetchone()
@@ -130,6 +130,9 @@ def get_auth(request: Request, conn: sqlite3.Connection = Depends(get_db)) -> Au
         raise HTTPException(401, "Sitzung abgelaufen.")
     if row["status"] != "approved":
         raise HTTPException(403, "Konto nicht freigegeben.")
+    seen = row["last_seen_at"] if "last_seen_at" in row.keys() else None
+    if not seen or seen < (datetime.now(timezone.utc) - timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"):
+        conn.execute("UPDATE sessions SET last_seen_at = ?, ip = ? WHERE token_hash = ?", (now(), client_ip(request), row["token_hash"]))
     if request.method in UNSAFE:
         sent = request.headers.get("x-csrf-token", "")
         if not _origin_ok(request) or not hmac.compare_digest(sent, row["csrf"]):

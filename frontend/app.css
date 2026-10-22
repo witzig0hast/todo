@@ -240,3 +240,8 @@ input.num { width: 72px; min-height: 34px; }
 .att { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .att img { width: 100%; height: 80px; object-fit: cover; border-radius: 6px; display: block; }
 .att-file { display: flex; align-items: center; gap: 6px; height: 80px; padding: 6px; color: inherit; text-decoration: none; font-size: .75rem; overflow: hidden; word-break: break-all; }
+
+/* ---------- Sicherheit ---------- */
+.qr { display: grid; place-items: center; padding: 12px; background: #fff; border-radius: var(--radius-sm); width: fit-content; margin: 0 auto; }
+.qr img { display: block; width: 200px; height: 200px; image-rendering: pixelated; }
+.key-box.codes { white-space: pre; font-size: .9rem; line-height: 1.8; text-align: center; }

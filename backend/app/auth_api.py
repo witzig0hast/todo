@@ -47,7 +47,7 @@ def _set_cookie(response: Response, token: str) -> None:
 
 def user_public(u: sqlite3.Row) -> dict:
     return {"id": u["id"], "username": u["username"], "role": u["role"], "status": u["status"],
-            "has_password": bool(u["has_password"])}
+            "has_password": bool(u["has_password"]), "twofa": bool(u["totp_secret_enc"])}
 
 
 def _require_local_auth() -> None:
@@ -103,6 +103,10 @@ def login(data: Credentials, request: Request, response: Response, conn: sqlite3
         raise HTTPException(403, "Dein Konto wartet noch auf die Freigabe durch einen Administrator.")
     if user["status"] != "approved":
         raise HTTPException(403, "Dein Konto wurde abgelehnt oder gesperrt.")
+    if user["totp_secret_enc"]:  # zweiter Faktor nötig: noch keine Sitzung, nur ein kurzlebiges Ticket
+        from .mfa import create_ticket
+
+        return {"twofa_required": True, "ticket": create_ticket(conn, user["id"])}
     token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"))
     audit(conn, user["username"], "login", None, user["id"], ip)
     _set_cookie(response, token)
@@ -130,3 +134,28 @@ def change_password(data: PasswordChange, request: Request, auth: Auth = Depends
                  (hash_password(data.new_password), auth.id))
     conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (auth.id, auth.token_hash))
     audit(conn, auth.user["username"], "password_change", None, auth.id, client_ip(request))
+
+
+# ------------------------------------------------------------------ Angemeldete Geräte (Sitzungen)
+@router.get("/sessions")
+def list_sessions(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    rows = conn.execute("SELECT * FROM sessions WHERE user_id = ? AND expires_at > ? ORDER BY COALESCE(last_seen_at, created_at) DESC",
+                        (auth.id, now()))
+    return {"sessions": [{"id": r["token_hash"][:16], "created_at": r["created_at"], "last_seen_at": r["last_seen_at"],
+                          "user_agent": r["user_agent"], "ip": r["ip"], "current": r["token_hash"] == auth.token_hash} for r in rows]}
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def revoke_session(session_id: str, request: Request, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    if not re.fullmatch(r"[0-9a-f]{16}", session_id) or auth.token_hash.startswith(session_id):
+        raise HTTPException(422, "Die aktuelle Sitzung bitte über „Abmelden“ beenden.")
+    cur = conn.execute("DELETE FROM sessions WHERE user_id = ? AND substr(token_hash, 1, 16) = ?", (auth.id, session_id))
+    if cur.rowcount == 0:
+        raise HTTPException(404, "Sitzung nicht gefunden.")
+    audit(conn, auth.user["username"], "session_revoke", session_id, auth.id, client_ip(request))
+
+
+@router.post("/sessions/revoke-others", status_code=204)
+def revoke_others(request: Request, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (auth.id, auth.token_hash))
+    audit(conn, auth.user["username"], "session_revoke_others", None, auth.id, client_ip(request))

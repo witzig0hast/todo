@@ -191,6 +191,36 @@ CREATE TABLE IF NOT EXISTS attachments (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_attachments_todo ON attachments(todo_id);
+CREATE TABLE IF NOT EXISTS recovery_codes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  code_hash TEXT NOT NULL,
+  used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS login_tickets (
+  ticket_hash TEXT PRIMARY KEY,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS passkeys (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  credential_id TEXT NOT NULL UNIQUE,
+  public_key BLOB NOT NULL,
+  sign_count INTEGER NOT NULL DEFAULT 0,
+  transports TEXT,
+  name TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  last_used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS webauthn_challenges (
+  id TEXT PRIMARY KEY,
+  user_id INTEGER,
+  kind TEXT NOT NULL,
+  challenge TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -226,6 +256,11 @@ COLUMNS = [
     ("user_settings", "summary_time", "TEXT"),                  # "08:00" = Morgen-Zusammenfassung, NULL = aus
     ("user_settings", "summary_sent_on", "TEXT"),               # "YYYY-MM-DD"
     ("user_settings", "ics_token_hash", "TEXT"),                # privater Kalender-Feed
+    ("users", "totp_secret_enc", "TEXT"),                       # 2FA aktiv, wenn gesetzt (verschlüsselt)
+    ("users", "totp_pending_enc", "TEXT"),                      # während der Einrichtung
+    ("users", "totp_last_step", "INTEGER NOT NULL DEFAULT 0"),  # Schutz gegen Wiederverwendung eines Codes
+    ("sessions", "last_seen_at", "TEXT"),
+    ("sessions", "ip", "TEXT"),
 ]
 
 
