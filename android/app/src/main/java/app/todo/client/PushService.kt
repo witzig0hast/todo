@@ -120,6 +120,7 @@ class PushService : Service() {
                     if (!response.isSuccessful) throw IOException("HTTP ${response.code}")
                     connected = true
                     backoff = 2_000L
+                    Thread { Geofences.sync(applicationContext) }.start()
                     readStream(response.body!!.source(), token, server)
                 }
             } catch (e: IOException) {
@@ -146,6 +147,7 @@ class PushService : Service() {
             when {
                 line.isEmpty() -> {
                     if (event == "message" && data.isNotEmpty()) handleMessage(data.toString(), token, server)
+                    if (event == "geofences") Thread { Geofences.sync(applicationContext) }.start()
                     event = ""
                     data.setLength(0)
                 }
@@ -164,7 +166,8 @@ class PushService : Service() {
         val id = msg.optInt("id", -1)
         if (id < 0) return
         val url = msg.optString("url").takeIf { it.startsWith("/") && !it.startsWith("//") }
-        val shown = Notifier.show(this, id, msg.optString("title", "Todo"), msg.optString("body", ""), url)
+        val actionToken = if (msg.isNull("action_token")) null else msg.optString("action_token").ifBlank { null }
+        val shown = Notifier.show(this, id, msg.optString("title", "Todo"), msg.optString("body", ""), url, actionToken)
         if (!shown) return // Benachrichtigungen aus: nicht bestätigen, der Server liefert später erneut
         try {
             val ack = Request.Builder()

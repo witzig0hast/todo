@@ -41,7 +41,7 @@ async def security_middleware(request: Request, call_next):
     h["X-Content-Type-Options"] = "nosniff"
     h["X-Frame-Options"] = "DENY"
     h["Referrer-Policy"] = "no-referrer"
-    h["Permissions-Policy"] = "microphone=(self), camera=(), geolocation=(), payment=()"
+    h["Permissions-Policy"] = "microphone=(self), camera=(), geolocation=(self), payment=()"
     h["Cross-Origin-Opener-Policy"] = "same-origin"
     if config.COOKIE_SECURE:
         h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"

@@ -8,9 +8,13 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.SystemClock
 import android.util.TypedValue
 import android.view.Gravity
+import android.view.View
 import android.view.ViewGroup
+import android.view.WindowManager
+import android.webkit.GeolocationPermissions
 import android.webkit.CookieManager
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
@@ -26,7 +30,11 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.biometric.BiometricManager
+import androidx.biometric.BiometricPrompt
+import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 
@@ -34,6 +42,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var prefs: Prefs
     private var webView: WebView? = null
     private var pendingMicRequest: PermissionRequest? = null
+    private var pendingGeo: Pair<String, GeolocationPermissions.Callback>? = null
+    private var unlocked = false
+    private var authenticating = false
+    private var lastHidden = 0L
 
     private val notificationPermission =
         registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
@@ -46,6 +58,103 @@ class MainActivity : AppCompatActivity() {
                 if (granted) request.grant(arrayOf(PermissionRequest.RESOURCE_AUDIO_CAPTURE)) else request.deny()
             }
         }
+
+    private val locationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+            val fine = result[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
+                checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+            pendingGeo?.let { (origin, cb) -> cb.invoke(origin, fine, false) }
+            pendingGeo = null
+            if (fine && wantsBackgroundLocation) askBackgroundLocation()
+        }
+
+    private val backgroundLocationPermission =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            wantsBackgroundLocation = false
+            if (granted) Thread { Geofences.sync(applicationContext) }.start()
+        }
+
+    private var wantsBackgroundLocation = false
+
+    /** Von der Web-Oberfläche angestoßen: Standort (inkl. Hintergrund) für Erinnerungen an Orten erlauben. */
+    fun requestLocationForReminders() {
+        wantsBackgroundLocation = true
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            askBackgroundLocation()
+        } else {
+            locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        }
+    }
+
+    private fun askBackgroundLocation() {
+        if (Build.VERSION.SDK_INT < 29 ||
+            checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED
+        ) {
+            wantsBackgroundLocation = false
+            Thread { Geofences.sync(applicationContext) }.start()
+            return
+        }
+        AlertDialog.Builder(this)
+            .setTitle("Standort im Hintergrund")
+            .setMessage("Damit Todo dich an einem Ort erinnern kann, während die App geschlossen ist, wähle im nächsten Schritt „Immer zulassen“.")
+            .setPositiveButton("Weiter") { _, _ -> backgroundLocationPermission.launch(Manifest.permission.ACCESS_BACKGROUND_LOCATION) }
+            .setNegativeButton("Abbrechen") { _, _ -> wantsBackgroundLocation = false }
+            .show()
+    }
+
+    /** Von der Web-Oberfläche angestoßen: App-Sperre ein/aus. */
+    fun setAppLock(enabled: Boolean) {
+        prefs.appLock = enabled
+        unlocked = true
+        applySecureFlag()
+    }
+
+    private fun applySecureFlag() {
+        // Mit App-Sperre: Inhalt nicht in der App-Übersicht und nicht in Screenshots zeigen
+        if (prefs.appLock) window.setFlags(WindowManager.LayoutParams.FLAG_SECURE, WindowManager.LayoutParams.FLAG_SECURE)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_SECURE)
+    }
+
+    private fun requireUnlock() {
+        if (!prefs.appLock || authenticating) return
+        if (unlocked && SystemClock.elapsedRealtime() - lastHidden < LOCK_GRACE_MS) return
+        unlocked = false
+        val authenticators = if (Build.VERSION.SDK_INT >= 30) {
+            BiometricManager.Authenticators.BIOMETRIC_WEAK or BiometricManager.Authenticators.DEVICE_CREDENTIAL
+        } else {
+            BiometricManager.Authenticators.BIOMETRIC_WEAK
+        }
+        if (BiometricManager.from(this).canAuthenticate(authenticators) != BiometricManager.BIOMETRIC_SUCCESS) {
+            // keine Bildschirmsperre/Biometrie eingerichtet -> Sperre wäre wirkungslos
+            unlocked = true
+            Toast.makeText(this, "App-Sperre: Bitte zuerst eine Bildschirmsperre einrichten.", Toast.LENGTH_LONG).show()
+            return
+        }
+        webView?.visibility = View.INVISIBLE
+        authenticating = true
+        val info = BiometricPrompt.PromptInfo.Builder()
+            .setTitle("Todo entsperren")
+            .setAllowedAuthenticators(authenticators)
+            .apply { if (Build.VERSION.SDK_INT < 30) setNegativeButtonText("Abbrechen") }
+            .build()
+        BiometricPrompt(this, ContextCompat.getMainExecutor(this), object : BiometricPrompt.AuthenticationCallback() {
+            override fun onAuthenticationSucceeded(result: BiometricPrompt.AuthenticationResult) {
+                authenticating = false
+                unlocked = true
+                webView?.visibility = View.VISIBLE
+            }
+
+            override fun onAuthenticationError(errorCode: Int, errString: CharSequence) {
+                authenticating = false
+                finish() // abgebrochen -> App schließen, Inhalt bleibt verborgen
+            }
+        }).authenticate(info)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        if (!authenticating) lastHidden = SystemClock.elapsedRealtime()
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -67,18 +176,33 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         })
+        applySecureFlag()
         if (prefs.serverUrl == null) showSetup() else showWeb(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         val server = prefs.serverUrl ?: return
+        val target = targetPath(intent) ?: return
+        val w = webView
+        if (w == null) showWeb(intent) else w.loadUrl(server + target)
+    }
+
+    /** Ziel aus Benachrichtigung (EXTRA_URL) oder aus "Teilen" (ACTION_SEND, Text). */
+    private fun targetPath(intent: Intent?): String? {
+        if (intent == null) return null
+        if (intent.action == Intent.ACTION_SEND && intent.type?.startsWith("text/") == true) {
+            val text = listOfNotNull(intent.getStringExtra(Intent.EXTRA_SUBJECT), intent.getStringExtra(Intent.EXTRA_TEXT))
+                .joinToString("\n").trim().take(2000)
+            return if (text.isEmpty()) null else "/#/share?text=" + Uri.encode(text)
+        }
         val path = intent.getStringExtra(EXTRA_URL)
-        if (isSafePath(path)) webView?.loadUrl(server + path)
+        return if (isSafePath(path)) path else null
     }
 
     override fun onResume() {
         super.onResume()
+        requireUnlock()
         // Falls das System den Dienst beendet hat: bei registriertem Gerät wieder starten
         if (prefs.deviceToken != null) PushService.start(this)
     }
@@ -204,7 +328,21 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        web.settings.setGeolocationEnabled(true)
         web.webChromeClient = object : WebChromeClient() {
+            override fun onGeolocationPermissionsShowPrompt(origin: String, callback: GeolocationPermissions.Callback) {
+                if (!sameOrigin(Uri.parse(origin))) {
+                    callback.invoke(origin, false, false)
+                    return
+                }
+                if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+                    callback.invoke(origin, true, false)
+                } else {
+                    pendingGeo = origin to callback
+                    locationPermission.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                }
+            }
+
             override fun onPermissionRequest(request: PermissionRequest) {
                 val micOnly = request.resources.all { it == PermissionRequest.RESOURCE_AUDIO_CAPTURE }
                 if (!sameOrigin(request.origin) || !micOnly) {
@@ -226,8 +364,7 @@ class MainActivity : AppCompatActivity() {
         }
 
         setContentView(web)
-        val path = launchIntent?.getStringExtra(EXTRA_URL)
-        web.loadUrl(if (isSafePath(path)) server + path else "$server/")
+        web.loadUrl(server + (targetPath(launchIntent) ?: "/"))
     }
 
     private fun showOfflinePage(view: WebView) {
@@ -252,5 +389,6 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_URL = "url"
+        private const val LOCK_GRACE_MS = 30_000L
     }
 }

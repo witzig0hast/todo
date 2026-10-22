@@ -20,6 +20,7 @@ const ICONS = {
   bell: '<path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 21a2 2 0 004 0"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/>', out: '<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>', more: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
+  moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>', pin: '<path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>', lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>', share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', tag: '<path d="M3 12V4a1 1 0 011-1h8l9 9-9 9z"/><path d="M7.5 7.5h.01"/>', repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 01-3 3H3"/>', filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
 };
@@ -112,7 +113,10 @@ async function boot() {
     const me = await api('/auth/me', { noAuthRedirect: true });
     state.user = me.user; state.csrf = me.csrf;
   } catch (_) { state.user = null; }
-  const ssoCode = new URLSearchParams(location.search).get('sso');
+  const qp = new URLSearchParams(location.search);
+  const shared = [qp.get('title'), qp.get('text'), qp.get('url')].filter(Boolean).join('\n').trim();
+  if (shared) { state.shareText = shared.slice(0, 4000); history.replaceState(null, '', '/#/share'); }
+  const ssoCode = qp.get('sso');
   if (ssoCode) history.replaceState(null, '', location.pathname + location.hash); // Parameter aus der URL entfernen
   if (!state.user) {
     closeStream();
@@ -271,6 +275,7 @@ function route() {
   const view = clear($('#view'));
   const r = state.route;
   if (isTaskRoute(r)) viewTasks(view);
+  else if (r === 'share') viewShare(view);
   else if (r === 'bus') viewBus(view);
   else if (r === 'assistant') viewAssistant(view);
   else if (r === 'settings') viewSettings(view);
@@ -414,6 +419,26 @@ function describeQuery(f) {
   return parts.join(' · ') || 'Alle Aufgaben';
 }
 
+function viewShare(view) {
+  const hashText = new URLSearchParams(location.hash.split('?')[1] || '').get('text');
+  const text = h('textarea', { maxlength: 4000, style: 'min-height:140px', 'aria-label': 'Geteilter Text' });
+  text.value = (hashText || state.shareText || '').slice(0, 4000);
+  state.shareText = null;
+  const save = guard(async () => {
+    const raw = text.value.trim(); if (!raw) return;
+    const [first, ...rest] = raw.split('\n');
+    const { title, tags } = splitTags(first.slice(0, 300));
+    await api('/todos', { method: 'POST', body: { title: title || first.slice(0, 300), notes: rest.join('\n').slice(0, 5000), tags } });
+    state.todos = (await api('/todos')).todos; toast('Aufgabe gespeichert', 'ok'); go('all');
+  });
+  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Geteilt'), h('div', { class: 'muted small' }, 'Aus einer anderen App empfangen – als Aufgabe übernehmen'))));
+  view.appendChild(h('div', { class: 'glass card col' }, text, h('div', { class: 'row wrap' },
+    btn('Mit KI auswerten', 'primary', () => aiDraft(text.value.trim(), null), 'spark'),
+    btn('Unverändert speichern', '', save, 'check'),
+    btn('Verwerfen', 'sm', () => go('today')))));
+  view.appendChild(h('div', { id: 'draft' }));
+}
+
 function viewSearch(view) {
   const f = state.search;
   const input = h('input', { type: 'text', placeholder: 'Titel, Notizen oder #tag …', value: f.q, maxlength: 100, 'aria-label': 'Suche', enterkeyhint: 'search' });
@@ -489,6 +514,7 @@ function showDraft(d, input) {
       btn('Speichern', 'sm primary', guard(async () => {
         const t = await api('/todos', { method: 'POST', body: { title: title.value, notes: d.notes || '', priority: prio, due_at: fromLocalInput(due.value), list_id: currentListId() } });
         state.todos.push(t); if (input) input.value = ''; clear(slot); renderTodos(); renderChrome(); toast('Aufgabe gespeichert', 'ok');
+        if (state.route === 'share') go('all');
       }), 'check'))));
 }
 
@@ -549,6 +575,7 @@ function todoRow(t) {
         list ? h('span', { class: 'chip' }, list.name) : null,
         subs.length ? h('span', { class: 'chip' }, `${subs.filter((s) => s.done).length}/${subs.length}`) : null,
         t.priority > 0 ? h('span', { class: 'chip' + (t.priority === 3 ? ' danger' : '') }, icon('flag'), ['', 'Niedrig', 'Mittel', 'Hoch'][t.priority]) : null,
+        t.location ? h('span', { class: 'chip' }, icon('pin'), t.location.name || 'Ort') : null,
         t.recurrence_text ? h('span', { class: 'chip', title: t.recurrence_text }, icon('repeat'), t.recurrence_text.replace(' (ab Erledigung)', '')) : null,
         (t.tags || []).map((g) => h('button', { type: 'button', class: 'chip tag', onclick: (e) => { e.stopPropagation(); go('tag/' + encodeURIComponent(g)); } }, '#' + g)),
         t.created_by !== 'user' ? h('span', { class: 'chip' }, icon('bus'), t.created_by) : null)));
@@ -608,7 +635,7 @@ function renderDetail() {
 }
 
 function detailBody(t) {
-  const save = guard(async (patch) => { Object.assign(t, await api('/todos/' + t.id, { method: 'PATCH', body: patch })); renderTodos(); renderChrome(); });
+  const save = guard(async (patch) => { const u = await api('/todos/' + t.id, { method: 'PATCH', body: patch }); delete u.next; Object.assign(t, u); renderTodos(); renderChrome(); });
   const title = h('input', { type: 'text', value: t.title, maxlength: 300, 'aria-label': 'Titel', onchange: () => title.value.trim() && save({ title: title.value }) });
   const notes = h('textarea', { 'aria-label': 'Notizen', placeholder: 'Notizen …', maxlength: 5000, onchange: () => save({ notes: notes.value }) }, t.notes);
   notes.value = t.notes;
@@ -641,6 +668,36 @@ function detailBody(t) {
   drawRem();
   const tomorrow9 = () => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9, 0, 0, 0); return Math.max(1, Math.round((d - new Date()) / 60000)); };
   const snoozeBtn = (label, min) => btn(label, 'sm', guard(async () => { const r = await api(`/todos/${t.id}/snooze`, { method: 'POST', body: { minutes: typeof min === 'function' ? min() : min } }); toast('Ich erinnere dich ' + fmtDue(r.snoozed_until), 'ok'); }));
+  // Ort (Erinnerung beim Ankommen – über die Android-App)
+  const locBox = h('div', { class: 'col', style: 'gap:8px' });
+  const drawLoc = () => {
+    clear(locBox);
+    const l = t.location;
+    if (l) {
+      const radius = h('select', { 'aria-label': 'Radius', onchange: () => save({ location: { ...l, radius: Number(radius.value) } }) },
+        [100, 200, 500, 1000, 2000].map((r) => h('option', { value: r, selected: l.radius === r }, r < 1000 ? r + ' m' : r / 1000 + ' km')));
+      const name = h('input', { type: 'text', value: l.name || '', placeholder: 'Name, z. B. Supermarkt', maxlength: 80, onchange: () => save({ location: { ...l, name: name.value.trim() } }) });
+      locBox.appendChild(h('div', { class: 'row' }, icon('pin'), h('span', { class: 'small muted grow' }, `${l.lat.toFixed(5)}, ${l.lon.toFixed(5)}`),
+        h('a', { class: 'small muted', href: `https://www.openstreetmap.org/?mlat=${l.lat}&mlon=${l.lon}#map=17/${l.lat}/${l.lon}`, target: '_blank', rel: 'noopener noreferrer' }, 'Karte')));
+      locBox.appendChild(h('div', { class: 'search-grid' }, name, radius));
+      locBox.appendChild(btn('Ort entfernen', 'sm', async () => { await save({ location: null }); drawLoc(); }));
+    } else {
+      const manual = h('input', { type: 'text', placeholder: 'Breite, Länge – z. B. 52.5200, 13.4050', 'aria-label': 'Koordinaten' });
+      locBox.appendChild(h('div', { class: 'row wrap' },
+        btn('Aktueller Standort', 'sm', () => {
+          if (!navigator.geolocation) { toast('Standort wird nicht unterstützt.', 'err'); return; }
+          navigator.geolocation.getCurrentPosition(async (p) => { await save({ location: { name: '', lat: p.coords.latitude, lon: p.coords.longitude, radius: 200 } }); drawLoc(); },
+            () => toast('Standort nicht verfügbar oder nicht erlaubt.', 'err'), { enableHighAccuracy: true, timeout: 15000 });
+        }, 'pin')));
+      locBox.appendChild(h('form', { class: 'row', onsubmit: async (e) => {
+        e.preventDefault();
+        const m = manual.value.match(/(-?\d+(?:[.,]\d+)?)\s*[,;\s]\s*(-?\d+(?:[.,]\d+)?)/);
+        if (!m) { toast('Bitte als „Breite, Länge“ eingeben.', 'err'); return; }
+        await save({ location: { name: '', lat: Number(m[1].replace(',', '.')), lon: Number(m[2].replace(',', '.')), radius: 200 } }); drawLoc();
+      } }, manual, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Ort setzen' }, icon('plus'))));
+    }
+  };
+  drawLoc();
   const subsBox = h('div', { class: 'col', style: 'gap:2px' });
   const drawSubs = () => {
     clear(subsBox);
@@ -668,6 +725,7 @@ function detailBody(t) {
     h('label', { class: 'field' }, 'Tags', tagsIn),
     h('div', { class: 'field' }, 'Wiederholung', freq, recExtra),
     h('div', { class: 'field' }, 'Erinnerungen' + (t.due_at ? '' : ' (wirken erst mit Fälligkeit)'), remBox),
+    h('div', { class: 'field' }, 'Ort (Erinnerung beim Ankommen, Android-App)', locBox),
     !t.done ? h('div', { class: 'field' }, 'Erinnere mich', h('div', { class: 'row wrap' }, snoozeBtn('in 10 Min.', 10), snoozeBtn('in 1 Std.', 60), snoozeBtn('morgen 9:00', tomorrow9))) : null,
     h('div', { class: 'col', style: 'gap:6px' }, h('div', { class: 'row' }, h('span', { class: 'muted small grow' }, 'Unteraufgaben'), aiBtn), subsBox,
       h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); const v = subInput.value.trim(); if (v) { subInput.value = ''; addSub(v); } } }, subInput, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Hinzufügen' }, icon('plus')))),
@@ -947,9 +1005,11 @@ const refreshDevices = guard(async (box) => {
   devices.forEach((d) => box.appendChild(h('div', { class: 'row', style: 'align-items:flex-start' },
     h('div', { class: 'grow' },
       h('div', { class: 'row wrap', style: 'gap:6px' }, h('strong', {}, d.name), d.id === android.deviceId ? h('span', { class: 'chip' }, 'dieses Gerät') : null,
-        h('span', { class: 'chip dotted ' + (d.online ? 'ok' : '') }, d.online ? 'online' : 'offline'), d.pending ? h('span', { class: 'chip dotted warn' }, d.pending + ' offen') : null),
+        h('span', { class: 'chip dotted ' + (d.online ? 'ok' : '') }, d.online ? 'online' : 'offline'), d.pending ? h('span', { class: 'chip dotted warn' }, d.pending + ' offen') : null,
+        d.quiet_start ? h('span', { class: 'chip' }, icon('moon'), `${d.quiet_start}–${d.quiet_end}`) : null),
       h('div', { class: 'muted small' }, [d.platform === 'android' ? 'Android' : 'Gerät', d.app_version ? 'v' + d.app_version : null, d.last_seen_at ? 'zuletzt ' + fmtTs(d.last_seen_at) : null].filter(Boolean).join(' · '))),
     h('button', { class: 'icon-btn', 'aria-label': 'Nachricht senden', title: 'Nachricht senden', onclick: () => deviceSheet(d) }, icon('send')),
+    h('button', { class: 'icon-btn', 'aria-label': 'Ruhezeiten', title: 'Ruhezeiten', onclick: () => quietSheet(d, box) }, icon('moon')),
     h('button', { class: 'icon-btn', 'aria-label': 'Umbenennen', title: 'Umbenennen', onclick: guard(async () => { const n = prompt('Neuer Name:', d.name); if (!n || !n.trim()) return; await api('/devices/' + d.id, { method: 'PATCH', body: { name: n.trim() } }); refreshDevices(box); }) }, icon('more')),
     h('button', { class: 'icon-btn', 'aria-label': 'Gerät entfernen', title: 'Entfernen', onclick: guard(async () => { if (!confirm(`„${d.name}“ entfernen? Die App registriert sich beim nächsten Öffnen neu.`)) return; await api('/devices/' + d.id, { method: 'DELETE' }); refreshDevices(box); }) }, icon('trash')))));
   if (hasAndroid() && android.info) {
@@ -959,20 +1019,35 @@ const refreshDevices = guard(async (box) => {
       h('div', { class: 'muted small' }, `Diese App (${i.name}): Benachrichtigungen ${i.notificationsAllowed ? 'erlaubt' : 'AUS'} · Hintergrundverbindung ${i.connected ? 'aktiv' : 'inaktiv'}`),
       h('div', { class: 'row wrap' },
         !i.notificationsAllowed ? btn('Benachrichtigungen erlauben', 'sm', () => nativeSend({ type: 'openNotificationSettings' }), 'bell') : null,
-        !i.batteryUnrestricted ? btn('Akku-Optimierung ausschalten', 'sm', () => nativeSend({ type: 'openBatterySettings' })) : null)));
+        !i.batteryUnrestricted ? btn('Akku-Optimierung ausschalten', 'sm', () => nativeSend({ type: 'openBatterySettings' })) : null,
+        btn(i.appLock ? 'App-Sperre aus' : 'App-Sperre (Fingerabdruck/PIN)', 'sm', () => { nativeSend({ type: 'setAppLock', enabled: !i.appLock }); i.appLock = !i.appLock; refreshDevices(box); }, 'lock'),
+        !i.locationAllowed ? btn('Standort-Erinnerungen erlauben', 'sm', () => nativeSend({ type: 'enableLocation' }), 'pin') : h('span', { class: 'chip dotted ok' }, 'Standort-Erinnerungen aktiv'))));
   }
 });
+
+function quietSheet(d, box) {
+  const start = h('input', { type: 'time', value: d.quiet_start || '22:00', 'aria-label': 'Beginn' });
+  const end = h('input', { type: 'time', value: d.quiet_end || '07:00', 'aria-label': 'Ende' });
+  const saveQ = (qs, qe) => guard(async () => { await api('/devices/' + d.id, { method: 'PATCH', body: { quiet_start: qs, quiet_end: qe } }); close(); refreshDevices(box); toast(qs ? `Ruhezeit ${qs}–${qe}` : 'Ruhezeit aus', 'ok'); })();
+  const close = sheet(h('form', { class: 'col', onsubmit: (e) => { e.preventDefault(); saveQ(start.value, end.value); } },
+    h('h2', {}, 'Ruhezeiten: ' + d.name),
+    h('p', { class: 'muted small' }, 'In dieser Zeit sammelt der Server Nachrichten für dieses Gerät und stellt sie danach zu. Dringende Nachrichten (z. B. Aufgaben mit Priorität „Hoch“) kommen trotzdem sofort.'),
+    h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'Von', start), h('label', { class: 'field' }, 'Bis', end)),
+    h('div', { class: 'row' }, d.quiet_start ? btn('Ruhezeit aus', 'sm danger', () => saveQ(null, null)) : null, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, 'Speichern'))));
+}
 
 function deviceSheet(device) {
   const title = h('input', { type: 'text', maxlength: 80, placeholder: 'Titel', required: true });
   const body = h('textarea', { maxlength: 500, placeholder: 'Nachricht (optional)', style: 'min-height:80px' });
+  const urgent = h('input', { type: 'checkbox' });
   const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
     e.preventDefault();
-    const r = await api('/devices/send', { method: 'POST', body: { device_id: device ? device.id : null, title: title.value.trim(), body: body.value.trim() } });
-    close(); toast(`An ${r.sent} Gerät${r.sent === 1 ? '' : 'e'} gesendet (${r.online} online)`, 'ok');
+    const r = await api('/devices/send', { method: 'POST', body: { device_id: device ? device.id : null, title: title.value.trim(), body: body.value.trim(), urgent: urgent.checked } });
+    close(); toast(`An ${r.sent} Gerät${r.sent === 1 ? '' : 'e'} gesendet (${r.online} online${r.held ? ', ' + r.held + ' in Ruhezeit' : ''})`, 'ok');
     const box = $('#devices-card'); if (box) refreshDevices(box);
   }) }, h('h2', {}, device ? 'Nachricht an ' + device.name : 'Nachricht an alle Geräte'),
   h('label', { class: 'field' }, 'Titel', title), h('label', { class: 'field' }, 'Nachricht', body),
+  h('label', { class: 'row small muted' }, urgent, 'Dringend – auch während der Ruhezeit zustellen'),
   h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, icon('send'), 'Senden'))));
   title.focus();
 }

@@ -178,6 +178,11 @@ COLUMNS = [
     ("device_messages", "todo_id", "INTEGER"),
     ("device_messages", "action_token", "TEXT"),
     ("user_settings", "tz", "TEXT"),
+    ("devices", "quiet_start", "TEXT"),                         # "22:00" (lokale Zeit des Benutzers)
+    ("devices", "quiet_end", "TEXT"),                           # "07:00"
+    ("device_messages", "deliver_after", "TEXT"),               # während Ruhezeit zurückgehalten bis ...
+    ("device_messages", "urgent", "INTEGER NOT NULL DEFAULT 0"),
+    ("todos", "location", "TEXT"),                              # JSON {name, lat, lon, radius}
 ]
 
 

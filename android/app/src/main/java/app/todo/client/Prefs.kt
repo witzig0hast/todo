@@ -28,6 +28,18 @@ class Prefs(context: Context) {
         get() = sp.getStringSet("extra_hosts", emptySet()) ?: emptySet()
         set(value) { sp.edit().putStringSet("extra_hosts", value).apply() }
 
+    var appLock: Boolean
+        get() = sp.getBoolean("app_lock", false)
+        set(value) { sp.edit().putBoolean("app_lock", value).apply() }
+
+    var geofenceIds: Set<Int>
+        get() = (sp.getStringSet("geofence_ids", emptySet()) ?: emptySet()).mapNotNull { it.toIntOrNull() }.toSet()
+        set(value) { sp.edit().putStringSet("geofence_ids", value.map { it.toString() }.toSet()).apply() }
+
+    var geofenceData: String
+        get() = sp.getString("geofence_data", "{}") ?: "{}"
+        set(value) { sp.edit().putString("geofence_data", value).apply() }
+
     fun clearDevice() {
         sp.edit().remove("device_token").remove("device_id").remove("device_name").apply()
     }

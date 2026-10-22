@@ -1,6 +1,5 @@
 package app.todo.client
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -16,7 +15,7 @@ import org.json.JSONObject
  * Schnittstelle zwischen der Web-Oberfläche und der App (`window.TodoAndroid`). Wird nur für die eigene Server-Origin
  * eingebunden (allowedOriginRules) und nur vom Hauptframe beantwortet.
  */
-class Bridge(private val activity: Activity, private val prefs: Prefs) : WebViewCompat.WebMessageListener {
+class Bridge(private val activity: MainActivity, private val prefs: Prefs) : WebViewCompat.WebMessageListener {
 
     override fun onPostMessage(
         view: WebView,
@@ -37,6 +36,8 @@ class Bridge(private val activity: Activity, private val prefs: Prefs) : WebView
             "openNotificationSettings" -> startSafely(
                 Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, activity.packageName)
             )
+            "setAppLock" -> activity.setAppLock(json.optBoolean("enabled", false))
+            "enableLocation" -> activity.requestLocationForReminders()
             "openBatterySettings" -> startSafely(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${activity.packageName}"))
             )
@@ -55,6 +56,8 @@ class Bridge(private val activity: Activity, private val prefs: Prefs) : WebView
             .put("notificationsAllowed", Notifier.allowed(activity))
             .put("connected", PushService.connected)
             .put("batteryUnrestricted", pm.isIgnoringBatteryOptimizations(activity.packageName))
+            .put("appLock", prefs.appLock)
+            .put("locationAllowed", Geofences.allowed(activity))
     }
 
     private fun register(json: JSONObject, reply: JavaScriptReplyProxy) {

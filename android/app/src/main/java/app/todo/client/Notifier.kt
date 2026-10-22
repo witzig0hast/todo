@@ -43,11 +43,27 @@ object Notifier {
         return PendingIntent.getActivity(context, requestCode, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
     }
 
-    /** Zeigt eine Nachricht als Benachrichtigung. Gibt false zurück, wenn Benachrichtigungen nicht erlaubt sind. */
+    private fun actionIntent(context: Context, notificationId: Int, token: String, action: String, code: Int): PendingIntent {
+        val intent = Intent(context, ActionReceiver::class.java).apply {
+            this.action = ActionReceiver.ACTION
+            putExtra(ActionReceiver.EXTRA_TOKEN, token)
+            putExtra(ActionReceiver.EXTRA_ACTION, action)
+            putExtra(ActionReceiver.EXTRA_NOTIFICATION_ID, notificationId)
+        }
+        return PendingIntent.getBroadcast(context, code, intent, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+    }
+
+    /**
+     * Zeigt eine Nachricht als Benachrichtigung. Mit Aktions-Token (Erinnerungen, Orte) gibt es die Knöpfe
+     * "Erledigt" und "10 Min. später". Gibt false zurück, wenn Benachrichtigungen nicht erlaubt sind.
+     */
     @Suppress("MissingPermission")
-    fun show(context: Context, id: Int, title: String, body: String, url: String?): Boolean {
+    fun show(
+        context: Context, id: Int, title: String, body: String, url: String?,
+        actionToken: String? = null,
+    ): Boolean {
         if (!allowed(context)) return false
-        val notification = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
+        val builder = NotificationCompat.Builder(context, CHANNEL_MESSAGES)
             .setSmallIcon(R.drawable.ic_stat_check)
             .setContentTitle(title)
             .setContentText(body)
@@ -56,8 +72,11 @@ object Notifier {
             .setAutoCancel(true)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_MESSAGE)
-            .build()
-        NotificationManagerCompat.from(context).notify(id, notification)
+        if (!actionToken.isNullOrBlank()) {
+            builder.addAction(0, "Erledigt", actionIntent(context, id, actionToken, "done", id * 4 + 1))
+            builder.addAction(0, "10 Min. später", actionIntent(context, id, actionToken, "snooze", id * 4 + 2))
+        }
+        NotificationManagerCompat.from(context).notify(id, builder.build())
         return true
     }
 }

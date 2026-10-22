@@ -114,7 +114,8 @@ def _run_todo_task(conn: sqlite3.Connection, user_id: int, agent: sqlite3.Row, t
                 raise LookupError(f"Gerät '{payload['device']}' existiert nicht.")
             device_id = row["id"]
         url = devices._check_url(payload.get("url"))
-        sent = devices.enqueue(conn, user_id, title[:80], str(payload.get("body") or "")[:500], url, device_id)
+        sent = devices.enqueue(conn, user_id, title[:80], str(payload.get("body") or "")[:500], url, device_id,
+                               urgent=bool(payload.get("urgent")))
         return {"queued": len(sent)}
     raise LookupError(f"Unbekannter Task-Typ '{task_type}'.")
 

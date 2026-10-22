@@ -61,6 +61,13 @@ Tags = Annotated[list[str] | None, AfterValidator(lambda v: normalize_tags(v) if
 Offsets = Annotated[list[int] | None, AfterValidator(_offsets)]
 
 
+class Location(BaseModel):
+    name: str = Field(default="", max_length=80)
+    lat: float = Field(ge=-90, le=90)
+    lon: float = Field(ge=-180, le=180)
+    radius: int = Field(default=200, ge=50, le=5000)  # Meter
+
+
 class TodoIn(BaseModel):
     title: str = Field(min_length=1, max_length=300)
     notes: str = Field(default="", max_length=5000)
@@ -71,6 +78,7 @@ class TodoIn(BaseModel):
     tags: Tags = None
     recurrence: Recurrence | None = None
     remind_offsets: Offsets = None
+    location: Location | None = None
 
 
 class TodoPatch(BaseModel):
@@ -83,6 +91,7 @@ class TodoPatch(BaseModel):
     tags: Tags = None
     recurrence: Recurrence | None = None
     remind_offsets: Offsets = None
+    location: Location | None = None
 
 
 class ListIn(BaseModel):
@@ -130,6 +139,7 @@ def todo_out(r: sqlite3.Row) -> dict:
     d["recurrence"] = rec
     d["recurrence_text"] = describe(Recurrence(**rec)) if rec else None
     d["remind_offsets"] = json.loads(d.get("remind_offsets") or "[0]")
+    d["location"] = json.loads(d["location"]) if d.get("location") else None
     d.pop("reminded", None)
     d.pop("user_id", None)
     return d
@@ -188,17 +198,26 @@ def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by
     ts = now()
     cur = conn.execute(
         "INSERT INTO todos (user_id, list_id, parent_id, title, notes, priority, due_at, created_by, created_at, updated_at,"
-        " tags, recurrence, remind_offsets) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        " tags, recurrence, remind_offsets, location) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (user_id, data.list_id, data.parent_id, data.title.strip(), data.notes, data.priority, data.due_at,
          created_by, ts, ts, _tags_db(data.tags or []),
          data.recurrence.model_dump_json() if data.recurrence else None,
-         json.dumps(data.remind_offsets if data.remind_offsets is not None else [0])),
+         json.dumps(data.remind_offsets if data.remind_offsets is not None else [0]),
+         data.location.model_dump_json() if data.location else None),
     )
     sync_reminders(conn, cur.lastrowid)
+    if data.location:
+        _geofences_changed(conn, user_id)
     row = conn.execute("SELECT * FROM todos WHERE id = ?", (cur.lastrowid,)).fetchone()
     out = todo_out(row)
     events.publish("user", user_id, "todo", {"op": "created", "todo": out})
     return out
+
+
+def _geofences_changed(conn: sqlite3.Connection, user_id: int) -> None:
+    from .devices import notify_geofences_changed  # spät importieren
+
+    notify_geofences_changed(conn, user_id)
 
 
 def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row) -> dict | None:
@@ -210,9 +229,9 @@ def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row) -> dict | None:
     ts = now()
     cur = conn.execute(
         "INSERT INTO todos (user_id, list_id, parent_id, title, notes, priority, due_at, created_by, created_at, updated_at,"
-        " tags, recurrence, remind_offsets) VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,?)",
+        " tags, recurrence, remind_offsets, location) VALUES (?,?,NULL,?,?,?,?,?,?,?,?,?,?,?)",
         (row["user_id"], row["list_id"], row["title"], row["notes"], row["priority"], due, row["created_by"], ts, ts,
-         row["tags"], row["recurrence"], row["remind_offsets"]))
+         row["tags"], row["recurrence"], row["remind_offsets"], row["location"]))
     new_id = cur.lastrowid
     for s in conn.execute("SELECT * FROM todos WHERE parent_id = ? ORDER BY id", (row["id"],)).fetchall():
         conn.execute("INSERT INTO todos (user_id, list_id, parent_id, title, notes, priority, created_by, created_at, updated_at)"
@@ -242,6 +261,10 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
         sets.append("recurrence = ?")
         rec = patch["recurrence"]
         vals.append(json.dumps(rec if isinstance(rec, dict) else rec.model_dump()) if rec else None)
+    if "location" in patch:
+        sets.append("location = ?")
+        loc = patch["location"]
+        vals.append(json.dumps(loc if isinstance(loc, dict) else loc.model_dump()) if loc else None)
     if "remind_offsets" in patch:
         sets.append("remind_offsets = ?")
         vals.append(json.dumps(patch["remind_offsets"] if patch["remind_offsets"] is not None else [0]))
@@ -255,6 +278,8 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
     if {"due_at", "remind_offsets", "done"} & set(patch):
         sync_reminders(conn, todo_id)
     updated = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    if "location" in patch or (row["location"] and ("done" in patch or "title" in patch)):
+        _geofences_changed(conn, user_id)
     out = todo_out(updated)
     events.publish("user", user_id, "todo", {"op": "updated", "todo": out})
     if completing:
@@ -314,9 +339,12 @@ def api_snooze(todo_id: int, data: SnoozeIn, auth: Auth = Depends(get_auth), con
 
 @router.delete("/todos/{todo_id}", status_code=204)
 def api_delete_todo(todo_id: int, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    had_location = conn.execute("SELECT location FROM todos WHERE id = ? AND user_id = ?", (todo_id, auth.id)).fetchone()
     cur = conn.execute("DELETE FROM todos WHERE id = ? AND user_id = ?", (todo_id, auth.id))
     if cur.rowcount == 0:
         raise HTTPException(404, "Aufgabe nicht gefunden.")
+    if had_location and had_location["location"]:
+        _geofences_changed(conn, auth.id)
     events.publish("user", auth.id, "todo", {"op": "deleted", "id": todo_id})
 
 
