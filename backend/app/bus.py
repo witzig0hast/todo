@@ -90,7 +90,8 @@ def _run_todo_task(conn: sqlite3.Connection, user_id: int, agent: sqlite3.Row, t
                 raise LookupError(f"Liste '{payload['list']}' existiert nicht.")
             list_id = row["id"]
         data = todos.TodoIn(title=payload.get("title", ""), notes=payload.get("notes", ""),
-                            priority=payload.get("priority", 0), due_at=payload.get("due_at"), list_id=list_id)
+                            priority=payload.get("priority", 0), due_at=payload.get("due_at"), list_id=list_id,
+                            tags=payload.get("tags"))
         return {"todo": todos.create_todo(conn, user_id, data, created_by=agent["name"])}
     if task_type == "todo.list":
         need("todos:read")

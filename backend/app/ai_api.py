@@ -7,6 +7,7 @@ from pydantic import BaseModel, Field
 from . import config, ollama, wyoming
 from .db import get_db
 from .security import Auth, enforce_rate, get_auth
+from .recurrence import valid_tz
 from .todos import list_todos
 
 router = APIRouter(prefix="/api", tags=["ai"])
@@ -42,6 +43,7 @@ class ChatIn(Ctx):
 
 class SettingsIn(BaseModel):
     ollama_model: str | None = Field(default=None, max_length=100)
+    tz: str | None = Field(default=None, max_length=64)
 
 
 def _model(conn: sqlite3.Connection, user_id: int) -> str:
@@ -66,17 +68,27 @@ def _local_to_utc(value: object, tz_offset: int) -> str | None:
     return (dt + timedelta(minutes=tz_offset)).replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _settings(conn: sqlite3.Connection, user_id: int) -> dict:
+    row = conn.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+    return {"ollama_model": _model(conn, user_id), "default_model": config.OLLAMA_MODEL,
+            "tz": (row["tz"] if row else None)}
+
+
 @router.get("/settings")
 def get_settings(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    return {"ollama_model": _model(conn, auth.id), "default_model": config.OLLAMA_MODEL}
+    return _settings(conn, auth.id)
 
 
 @router.put("/settings")
 def put_settings(data: SettingsIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("INSERT INTO user_settings (user_id, ollama_model) VALUES (?, ?) "
-                 "ON CONFLICT(user_id) DO UPDATE SET ollama_model = excluded.ollama_model",
-                 (auth.id, data.ollama_model or None))
-    return {"ollama_model": _model(conn, auth.id)}
+    patch = data.model_dump(exclude_unset=True)
+    if "tz" in patch and patch["tz"] and not valid_tz(patch["tz"]):
+        raise HTTPException(422, "Unbekannte Zeitzone.")
+    conn.execute("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)", (auth.id,))
+    for key in ("ollama_model", "tz"):
+        if key in patch:
+            conn.execute(f"UPDATE user_settings SET {key} = ? WHERE user_id = ?", (patch[key] or None, auth.id))
+    return _settings(conn, auth.id)
 
 
 @router.get("/ai/models")

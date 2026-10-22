@@ -55,7 +55,7 @@ svg { width: 20px; height: 20px; flex: none; stroke: currentColor; fill: none; s
 .btn:disabled { opacity: .45; pointer-events: none; }
 .icon-btn { width: 40px; height: 40px; border-radius: var(--radius-sm); display: inline-grid; place-items: center; color: var(--muted); transition: background .15s, color .15s; flex: none; }
 .icon-btn:hover { background: var(--hover); color: var(--text); }
-input[type=text], input[type=password], input[type=datetime-local], select, textarea {
+input[type=text], input[type=password], input[type=datetime-local], input[type=number], input[type=email], input[type=url], select, textarea {
   width: 100%; padding: 0 12px; border-radius: var(--radius-sm); background: var(--bg); border: 1px solid var(--border); min-height: 42px;
   transition: border-color .15s, box-shadow .15s; }
 textarea { padding: 10px 12px; resize: vertical; min-height: 96px; line-height: 1.5; }
@@ -202,3 +202,11 @@ a.btn { text-decoration: none; color: inherit; }
 a.btn.primary { color: var(--on-accent); }
 .divider { display: flex; align-items: center; gap: 12px; color: var(--faint); font-size: .75rem; text-transform: uppercase; letter-spacing: .08em; }
 .divider::before, .divider::after { content: ''; flex: 1; height: 1px; background: var(--border); }
+
+/* ---------- Suche, Tags, Wiederholung ---------- */
+.search-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.chip.tag { cursor: pointer; }
+.chip.tag:hover { color: var(--text); border-color: var(--border-strong); }
+button.chip { font: inherit; font-size: .75rem; }
+input.num { width: 72px; min-height: 34px; }
+@media (min-width: 900px) { .search-btn { display: none; } }

@@ -1,5 +1,5 @@
 // Service Worker: App-Shell-Cache (Offline-Start) + Web-Push. API-Antworten werden nie gecacht.
-const CACHE = 'todo-shell-v3';
+const CACHE = 'todo-shell-v4';
 const SHELL = ['/', '/app.css', '/app.js', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (e) => {
@@ -25,13 +25,22 @@ self.addEventListener('fetch', (e) => {
 self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch (_) { /* ignore */ }
-  e.waitUntil(self.registration.showNotification(d.title || 'Todo', {
-    body: d.body || '', icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', data: { url: d.url || '/' },
-  }));
+  const opts = { body: d.body || '', icon: '/icons/icon-192.png', badge: '/icons/icon-192.png', data: { url: d.url || '/' } };
+  if (d.todo_id && d.token) { // Aktionen direkt in der Benachrichtigung (signierter Token, keine Sitzung nötig)
+    opts.actions = [{ action: 'done', title: 'Erledigt' }, { action: 'snooze', title: '10 Min. später' }];
+    opts.data.token = d.token; opts.tag = 'todo-' + d.todo_id; opts.renotify = true;
+  }
+  e.waitUntil(self.registration.showNotification(d.title || 'Todo', opts));
 });
 
 self.addEventListener('notificationclick', (e) => {
   e.notification.close();
+  const token = e.notification.data && e.notification.data.token;
+  if (token && (e.action === 'done' || e.action === 'snooze')) {
+    e.waitUntil(fetch('/api/actions', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token, action: e.action, minutes: 10 }) }).catch(() => {}));
+    return;
+  }
   const url = (e.notification.data && e.notification.data.url) || '/';
   e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
     for (const c of list) { if ('focus' in c) { c.navigate(url).catch(() => {}); return c.focus(); } }

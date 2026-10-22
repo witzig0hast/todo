@@ -140,6 +140,23 @@ CREATE TABLE IF NOT EXISTS oidc_pending (
   is_admin_group INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS reminders (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  remind_at TEXT NOT NULL,
+  offset_min INTEGER,            -- Minuten vor Fälligkeit; NULL = geschlummert
+  sent INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(sent, remind_at);
+CREATE INDEX IF NOT EXISTS idx_reminders_todo ON reminders(todo_id);
+CREATE TABLE IF NOT EXISTS saved_filters (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  query TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -150,6 +167,18 @@ CREATE TABLE IF NOT EXISTS audit_log (
   ip TEXT
 );
 """
+
+
+# Nachträglich hinzugefügte Spalten (Migration beim Start, idempotent)
+COLUMNS = [
+    ("users", "has_password", "INTEGER NOT NULL DEFAULT 1"),   # SSO-Konten haben zunächst kein lokales Passwort
+    ("todos", "tags", "TEXT NOT NULL DEFAULT ''"),              # ",tag1,tag2,"
+    ("todos", "recurrence", "TEXT"),                            # JSON, siehe todos.Recurrence
+    ("todos", "remind_offsets", "TEXT NOT NULL DEFAULT '[0]'"),  # JSON-Liste: Minuten vor Fälligkeit
+    ("device_messages", "todo_id", "INTEGER"),
+    ("device_messages", "action_token", "TEXT"),
+    ("user_settings", "tz", "TEXT"),
+]
 
 
 def now() -> str:
@@ -169,9 +198,17 @@ def init_db() -> None:
     config.DATA_DIR.mkdir(parents=True, exist_ok=True)
     with connect() as conn:
         conn.executescript(SCHEMA)
-        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)")}
-        if "has_password" not in cols:  # Migration: SSO-Konten haben zunächst kein lokales Passwort
-            conn.execute("ALTER TABLE users ADD COLUMN has_password INTEGER NOT NULL DEFAULT 1")
+        for table, column, ddl in COLUMNS:
+            cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in cols:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+        # Einmalige Übernahme: offene, noch nicht erinnerte Aufgaben bekommen ihre Fälligkeits-Erinnerung
+        conn.execute(
+            "INSERT INTO reminders (todo_id, user_id, remind_at, offset_min) "
+            "SELECT t.id, t.user_id, t.due_at, 0 FROM todos t WHERE t.done = 0 AND t.reminded = 0 AND t.due_at IS NOT NULL "
+            "AND NOT EXISTS (SELECT 1 FROM reminders r WHERE r.todo_id = t.id) "
+            "AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'migrated_reminders')")
+        conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('migrated_reminders', '1')")
 
 
 def get_db() -> Iterator[sqlite3.Connection]:

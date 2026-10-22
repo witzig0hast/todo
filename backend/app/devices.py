@@ -56,7 +56,10 @@ class RenameIn(BaseModel):
 
 
 def message_out(r: sqlite3.Row) -> dict:
-    return {"id": r["id"], "title": r["title"], "body": r["body"], "url": r["url"], "created_at": r["created_at"]}
+    keys = r.keys()
+    return {"id": r["id"], "title": r["title"], "body": r["body"], "url": r["url"], "created_at": r["created_at"],
+            "todo_id": r["todo_id"] if "todo_id" in keys else None,
+            "action_token": r["action_token"] if "action_token" in keys else None}
 
 
 def _unique_name(conn: sqlite3.Connection, user_id: int, name: str, exclude_id: int | None = None) -> str:
@@ -69,7 +72,7 @@ def _unique_name(conn: sqlite3.Connection, user_id: int, name: str, exclude_id: 
 
 
 def enqueue(conn: sqlite3.Connection, user_id: int, title: str, body: str = "", url: str | None = None,
-            device_id: int | None = None) -> list[dict]:
+            device_id: int | None = None, todo_id: int | None = None, action_token: str | None = None) -> list[dict]:
     """Legt die Nachricht für ein Gerät (oder alle Geräte des Benutzers) in die Warteschlange und stellt sie live zu."""
     if device_id is not None:
         rows = conn.execute("SELECT id FROM devices WHERE id = ? AND user_id = ?", (device_id, user_id)).fetchall()
@@ -79,17 +82,18 @@ def enqueue(conn: sqlite3.Connection, user_id: int, title: str, body: str = "", 
         rows = conn.execute("SELECT id FROM devices WHERE user_id = ?", (user_id,)).fetchall()
     out = []
     for d in rows:
-        cur = conn.execute("INSERT INTO device_messages (user_id, device_id, title, body, url, created_at) VALUES (?,?,?,?,?,?)",
-                           (user_id, d["id"], title, body, url, now()))
+        cur = conn.execute("INSERT INTO device_messages (user_id, device_id, title, body, url, created_at, todo_id, action_token)"
+                           " VALUES (?,?,?,?,?,?,?,?)", (user_id, d["id"], title, body, url, now(), todo_id, action_token))
         msg = message_out(conn.execute("SELECT * FROM device_messages WHERE id = ?", (cur.lastrowid,)).fetchone())
         events.publish("device", d["id"], "message", msg, event_id=msg["id"])
         out.append({**msg, "device_id": d["id"]})
     return out
 
 
-def enqueue_for_users(conn: sqlite3.Connection, user_ids: list[int], title: str, body: str = "", url: str | None = None) -> None:
+def enqueue_for_users(conn: sqlite3.Connection, user_ids: list[int], title: str, body: str = "", url: str | None = None,
+                      todo_id: int | None = None, action_token: str | None = None) -> None:
     for uid in user_ids:
-        enqueue(conn, uid, title, body, url)
+        enqueue(conn, uid, title, body, url, todo_id=todo_id, action_token=action_token)
 
 
 def cleanup(conn: sqlite3.Connection) -> None:
