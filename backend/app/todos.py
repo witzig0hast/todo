@@ -145,11 +145,43 @@ def todo_out(r: sqlite3.Row) -> dict:
     return d
 
 
+# ------------------------------------------------------------------ Zugriff (eigene + geteilte Listen)
+ACCESS_SQL = ("(t.user_id = :u OR t.list_id IN (SELECT id FROM lists WHERE user_id = :u "
+              "UNION SELECT list_id FROM list_members WHERE user_id = :u))")
+
+
+def can_use_list(conn: sqlite3.Connection, user_id: int, list_id: int) -> bool:
+    return conn.execute("SELECT 1 FROM lists WHERE id = :l AND (user_id = :u OR id IN "
+                        "(SELECT list_id FROM list_members WHERE user_id = :u))", {"l": list_id, "u": user_id}).fetchone() is not None
+
+
 def _check_list(conn: sqlite3.Connection, user_id: int, list_id: int | None) -> None:
-    if list_id is not None and not conn.execute(
-        "SELECT 1 FROM lists WHERE id = ? AND user_id = ?", (list_id, user_id)
-    ).fetchone():
+    if list_id is not None and not can_use_list(conn, user_id, list_id):
         raise HTTPException(404, "Liste nicht gefunden.")
+
+
+def get_todo(conn: sqlite3.Connection, user_id: int, todo_id: int) -> sqlite3.Row:
+    """Aufgabe, auf die der Benutzer zugreifen darf (eigene oder in einer eigenen/geteilten Liste) - sonst 404."""
+    row = conn.execute(f"SELECT t.* FROM todos t WHERE t.id = :id AND {ACCESS_SQL}", {"id": todo_id, "u": user_id}).fetchone()
+    if row is None:
+        raise HTTPException(404, "Aufgabe nicht gefunden.")
+    return row
+
+
+def audience(conn: sqlite3.Connection, todo: sqlite3.Row | dict) -> set[int]:
+    """Alle Benutzer, die die Aufgabe sehen (für Live-Updates)."""
+    users = {todo["user_id"]}
+    if todo["list_id"]:
+        lst = conn.execute("SELECT user_id FROM lists WHERE id = ?", (todo["list_id"],)).fetchone()
+        if lst:
+            users.add(lst["user_id"])
+        users.update(r["user_id"] for r in conn.execute("SELECT user_id FROM list_members WHERE list_id = ?", (todo["list_id"],)))
+    return users
+
+
+def _publish(conn: sqlite3.Connection, todo: sqlite3.Row | dict, payload: dict) -> None:
+    for uid in audience(conn, todo):
+        events.publish("user", uid, "todo", payload)
 
 
 # ------------------------------------------------------------------ Erinnerungen
@@ -172,9 +204,7 @@ def sync_reminders(conn: sqlite3.Connection, todo_id: int) -> None:
 
 
 def snooze(conn: sqlite3.Connection, user_id: int, todo_id: int, minutes: int) -> dict:
-    row = conn.execute("SELECT * FROM todos WHERE id = ? AND user_id = ?", (todo_id, user_id)).fetchone()
-    if row is None:
-        raise HTTPException(404, "Aufgabe nicht gefunden.")
+    row = get_todo(conn, user_id, todo_id)
     at = (datetime.now(timezone.utc) + timedelta(minutes=minutes)).strftime(FMT)
     conn.execute("DELETE FROM reminders WHERE todo_id = ? AND sent = 0 AND offset_min IS NULL", (todo_id,))
     conn.execute("INSERT INTO reminders (todo_id, user_id, remind_at, offset_min) VALUES (?,?,?,NULL)",
@@ -188,11 +218,10 @@ def snooze(conn: sqlite3.Connection, user_id: int, todo_id: int, minutes: int) -
 def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by: str = "user") -> dict:
     _check_list(conn, user_id, data.list_id)
     if data.parent_id is not None:
-        parent = conn.execute(
-            "SELECT parent_id FROM todos WHERE id = ? AND user_id = ?", (data.parent_id, user_id)
-        ).fetchone()
-        if parent is None:
-            raise HTTPException(404, "Übergeordnete Aufgabe nicht gefunden.")
+        try:
+            parent = get_todo(conn, user_id, data.parent_id)
+        except HTTPException as exc:
+            raise HTTPException(404, "Übergeordnete Aufgabe nicht gefunden.") from exc
         if parent["parent_id"] is not None:
             raise HTTPException(422, "Nur eine Ebene Unteraufgaben erlaubt.")
     ts = now()
@@ -210,7 +239,7 @@ def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by
         _geofences_changed(conn, user_id)
     row = conn.execute("SELECT * FROM todos WHERE id = ?", (cur.lastrowid,)).fetchone()
     out = todo_out(row)
-    events.publish("user", user_id, "todo", {"op": "created", "todo": out})
+    _publish(conn, row, {"op": "created", "todo": out})
     return out
 
 
@@ -239,14 +268,12 @@ def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row) -> dict | None:
                      (s["user_id"], s["list_id"], new_id, s["title"], s["notes"], s["priority"], s["created_by"], ts, ts))
     sync_reminders(conn, new_id)
     out = todo_out(conn.execute("SELECT * FROM todos WHERE id = ?", (new_id,)).fetchone())
-    events.publish("user", row["user_id"], "todo", {"op": "reload"})  # inkl. Unteraufgaben
+    _publish(conn, row, {"op": "reload"})  # inkl. Unteraufgaben
     return out
 
 
 def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dict) -> dict:
-    row = conn.execute("SELECT * FROM todos WHERE id = ? AND user_id = ?", (todo_id, user_id)).fetchone()
-    if row is None:
-        raise HTTPException(404, "Aufgabe nicht gefunden.")
+    row = get_todo(conn, user_id, todo_id)
     if "list_id" in patch:
         _check_list(conn, user_id, patch["list_id"])
     sets, vals = [], []
@@ -281,7 +308,9 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
     if "location" in patch or (row["location"] and ("done" in patch or "title" in patch)):
         _geofences_changed(conn, user_id)
     out = todo_out(updated)
-    events.publish("user", user_id, "todo", {"op": "updated", "todo": out})
+    _publish(conn, updated, {"op": "updated", "todo": out})
+    if row["list_id"] != updated["list_id"]:
+        _publish(conn, row, {"op": "reload"})  # aus geteilter Liste verschoben
     if completing:
         nxt = _spawn_next(conn, updated)
         if nxt:
@@ -291,22 +320,21 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
 
 def list_todos(conn: sqlite3.Connection, user_id: int, done: bool | None = None, list_id: int | None = None,
                limit: int = 500, q: str | None = None, tag: str | None = None) -> list[dict]:
-    sql, args = "SELECT * FROM todos WHERE user_id = ?", [user_id]
+    sql, args = f"SELECT t.* FROM todos t WHERE {ACCESS_SQL}", {"u": user_id}
     if done is not None:
-        sql += " AND done = ?"
-        args.append(int(done))
+        sql += " AND t.done = :done"
+        args["done"] = int(done)
     if list_id is not None:
-        sql += " AND list_id = ?"
-        args.append(list_id)
+        sql += " AND t.list_id = :list"
+        args["list"] = list_id
     if q:
-        sql += " AND (title LIKE ? ESCAPE '\\' OR notes LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')"
-        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
-        args += [like, like, like]
+        sql += " AND (t.title LIKE :like ESCAPE '\\' OR t.notes LIKE :like ESCAPE '\\' OR t.tags LIKE :like ESCAPE '\\')"
+        args["like"] = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"
     if tag:
-        sql += " AND tags LIKE ?"
-        args.append(f"%,{normalize_tags([tag])[0]},%")
-    sql += " ORDER BY done, COALESCE(due_at, '9999'), priority DESC, id LIMIT ?"
-    args.append(limit)
+        sql += " AND t.tags LIKE :tag"
+        args["tag"] = f"%,{normalize_tags([tag])[0]},%"
+    sql += " ORDER BY t.done, COALESCE(t.due_at, '9999'), t.priority DESC, t.id LIMIT :limit"
+    args["limit"] = limit
     return [todo_out(r) for r in conn.execute(sql, args)]
 
 
@@ -339,13 +367,18 @@ def api_snooze(todo_id: int, data: SnoozeIn, auth: Auth = Depends(get_auth), con
 
 @router.delete("/todos/{todo_id}", status_code=204)
 def api_delete_todo(todo_id: int, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    had_location = conn.execute("SELECT location FROM todos WHERE id = ? AND user_id = ?", (todo_id, auth.id)).fetchone()
-    cur = conn.execute("DELETE FROM todos WHERE id = ? AND user_id = ?", (todo_id, auth.id))
-    if cur.rowcount == 0:
-        raise HTTPException(404, "Aufgabe nicht gefunden.")
-    if had_location and had_location["location"]:
-        _geofences_changed(conn, auth.id)
-    events.publish("user", auth.id, "todo", {"op": "deleted", "id": todo_id})
+    row = get_todo(conn, auth.id, todo_id)
+    users = audience(conn, row)
+    for a in conn.execute("SELECT stored_name FROM attachments WHERE todo_id = ? OR todo_id IN "
+                          "(SELECT id FROM todos WHERE parent_id = ?)", (todo_id, todo_id)).fetchall():
+        from .attachments import remove_file
+
+        remove_file(a["stored_name"])
+    conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
+    if row["location"]:
+        _geofences_changed(conn, row["user_id"])
+    for uid in users:
+        events.publish("user", uid, "todo", {"op": "deleted", "id": todo_id})
 
 
 @router.post("/todos/clear-done", status_code=204)
@@ -366,8 +399,55 @@ def api_tags(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(
 
 @router.get("/lists")
 def api_lists(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    rows = conn.execute("SELECT id, name, color, created_at FROM lists WHERE user_id = ? ORDER BY id", (auth.id,))
-    return {"lists": [dict(r) for r in rows]}
+    out = []
+    for r in conn.execute("SELECT l.*, u.username AS owner FROM lists l JOIN users u ON u.id = l.user_id WHERE l.user_id = :u "
+                          "OR l.id IN (SELECT list_id FROM list_members WHERE user_id = :u) ORDER BY l.id", {"u": auth.id}):
+        members = [m["username"] for m in conn.execute("SELECT u.username FROM list_members m JOIN users u ON u.id = m.user_id "
+                                                         "WHERE m.list_id = ? ORDER BY u.username", (r["id"],))]
+        mine = r["user_id"] == auth.id
+        out.append({"id": r["id"], "name": r["name"], "color": r["color"], "created_at": r["created_at"],
+                    "owner": r["owner"], "mine": mine, "members": members})
+    return {"lists": out}
+
+
+class MemberIn(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+def _own_list(conn: sqlite3.Connection, user_id: int, list_id: int) -> sqlite3.Row:
+    row = conn.execute("SELECT * FROM lists WHERE id = ? AND user_id = ?", (list_id, user_id)).fetchone()
+    if row is None:
+        raise HTTPException(404, "Liste nicht gefunden (oder nicht deine).")
+    return row
+
+
+@router.post("/lists/{list_id}/members", status_code=201)
+def api_add_member(list_id: int, data: MemberIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    _own_list(conn, auth.id, list_id)
+    target = conn.execute("SELECT id, username FROM users WHERE username = ? AND status = 'approved'", (data.username.strip(),)).fetchone()
+    if target is None or target["id"] == auth.id:
+        raise HTTPException(404, "Benutzer nicht gefunden.")
+    if conn.execute("SELECT COUNT(*) FROM list_members WHERE list_id = ?", (list_id,)).fetchone()[0] >= 20:
+        raise HTTPException(422, "Maximal 20 Mitglieder pro Liste.")
+    conn.execute("INSERT OR IGNORE INTO list_members (list_id, user_id, added_at) VALUES (?,?,?)", (list_id, target["id"], now()))
+    events.publish("user", target["id"], "todo", {"op": "reload"})
+    from . import push
+
+    push.notify_threadsafe([target["id"]], "Liste geteilt", f"{auth.user['username']} hat eine Liste mit dir geteilt.", "/")
+    return {"username": target["username"]}
+
+
+@router.delete("/lists/{list_id}/members/{username}", status_code=204)
+def api_remove_member(list_id: int, username: str, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    """Besitzer entfernt ein Mitglied - oder ein Mitglied verlässt die Liste selbst."""
+    lst = conn.execute("SELECT * FROM lists WHERE id = ?", (list_id,)).fetchone()
+    target = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+    if lst is None or target is None or not (lst["user_id"] == auth.id or target["id"] == auth.id):
+        raise HTTPException(404, "Mitglied nicht gefunden.")
+    if conn.execute("DELETE FROM list_members WHERE list_id = ? AND user_id = ?", (list_id, target["id"])).rowcount == 0:
+        raise HTTPException(404, "Mitglied nicht gefunden.")
+    for uid in (lst["user_id"], target["id"]):
+        events.publish("user", uid, "todo", {"op": "reload"})
 
 
 @router.post("/lists", status_code=201)
@@ -381,7 +461,7 @@ def api_create_list(data: ListIn, auth: Auth = Depends(get_auth), conn: sqlite3.
 def api_patch_list(list_id: int, data: ListPatch, auth: Auth = Depends(get_auth),
                    conn: sqlite3.Connection = Depends(get_db)):
     patch = data.model_dump(exclude_none=True)
-    _check_list(conn, auth.id, list_id)
+    _own_list(conn, auth.id, list_id)
     if patch:
         sets = ", ".join(f"{k} = ?" for k in patch)
         conn.execute(f"UPDATE lists SET {sets} WHERE id = ?", (*patch.values(), list_id))

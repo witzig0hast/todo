@@ -7,7 +7,8 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.staticfiles import StaticFiles
 
-from . import actions, admin_api, ai_api, assistant, auth_api, bus, config, db, devices, events, mailin, push, push_api, rules, sso, todos
+from . import (actions, admin_api, ai_api, assistant, attachments, auth_api, bus, calendar_feed, config, db, devices, events, mailin,
+               push, push_api, rules, sso, todos)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -32,12 +33,13 @@ app = FastAPI(title="Todo", lifespan=lifespan, docs_url=None, redoc_url=None, op
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     declared = request.headers.get("content-length")
-    limit = config.MAX_AUDIO_BYTES if request.url.path == "/api/voice/transcribe" else config.MAX_BODY_BYTES
+    big = request.url.path == "/api/voice/transcribe" or request.url.path.endswith("/attachments")
+    limit = max(config.MAX_AUDIO_BYTES, 10 * 1024 * 1024) if big else config.MAX_BODY_BYTES
     if declared and declared.isdigit() and int(declared) > limit:
         return JSONResponse({"detail": "Anfrage zu groß."}, status_code=413)
     response: Response = await call_next(request)
     h = response.headers
-    h["Content-Security-Policy"] = CSP
+    h.setdefault("Content-Security-Policy", CSP)
     h["X-Content-Type-Options"] = "nosniff"
     h["X-Frame-Options"] = "DENY"
     h["Referrer-Policy"] = "no-referrer"
@@ -46,7 +48,7 @@ async def security_middleware(request: Request, call_next):
     if config.COOKIE_SECURE:
         h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
     if request.url.path.startswith("/api/"):
-        h["Cache-Control"] = "no-store"
+        h.setdefault("Cache-Control", "no-store")
     else:  # Oberfläche: Browser fragt bei jedem Aufruf per ETag nach (304 = fast gratis), damit Updates sofort ankommen
         h["Cache-Control"] = "no-cache"
     return response
@@ -57,7 +59,8 @@ def health():
     return {"ok": True}
 
 
-for module in (auth_api, sso, admin_api, todos, actions, bus, rules, devices, ai_api, assistant, mailin, push_api):
+for module in (auth_api, sso, admin_api, todos, attachments, calendar_feed, actions, bus, rules, devices, ai_api, assistant,
+               mailin, push_api):
     app.include_router(module.router)
 
 

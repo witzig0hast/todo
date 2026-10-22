@@ -117,7 +117,7 @@ def _check_due() -> None:
 
     with session() as conn:
         rows = conn.execute(
-            "SELECT r.id, r.offset_min, t.id AS todo_id, t.user_id, t.title, t.priority FROM reminders r JOIN todos t ON t.id = r.todo_id "
+            "SELECT r.id, r.offset_min, t.id AS todo_id, r.user_id, t.title, t.priority FROM reminders r JOIN todos t ON t.id = r.todo_id "
             "WHERE r.sent = 0 AND r.remind_at <= ? AND t.done = 0 ORDER BY r.remind_at LIMIT 200", (now(),)).fetchall()
         for r in rows:
             conn.execute("UPDATE reminders SET sent = 1 WHERE id = ?", (r["id"],))

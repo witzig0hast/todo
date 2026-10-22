@@ -20,6 +20,7 @@ const ICONS = {
   bell: '<path d="M6 8a6 6 0 1112 0c0 7 3 8 3 8H3s3-1 3-8M10 21a2 2 0 004 0"/>',
   key: '<circle cx="8" cy="15" r="4"/><path d="M11 12l9-9M16 7l3 3"/>', out: '<path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4M16 17l5-5-5-5M21 12H9"/>',
   copy: '<rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V6a2 2 0 012-2h9"/>', more: '<path d="M5 12h.01M12 12h.01M19 12h.01"/>',
+  users: '<circle cx="9" cy="8" r="3.5"/><path d="M2 20c0-3.5 3-6 7-6s7 2.5 7 6M16 4.5a3.5 3.5 0 010 7M22 20c0-3-2-5-5-5.7"/>', clip: '<path d="M21 11l-8.5 8.5a5 5 0 01-7-7L14 4a3.5 3.5 0 015 5l-8.5 8.5a2 2 0 01-3-3L15 7"/>', chevl: '<path d="M15 18l-6-6 6-6"/>', chevr: '<path d="M9 18l6-6-6-6"/>',
   link: '<path d="M10 14a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 10a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/>', bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
   moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>', pin: '<path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>', lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>', share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', tag: '<path d="M3 12V4a1 1 0 011-1h8l9 9-9 9z"/><path d="M7.5 7.5h.01"/>', repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 01-3 3H3"/>', filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
@@ -231,7 +232,12 @@ function openStream() {
   closeStream();
   const es = new EventSource('/api/agent-bus/stream');
   state.sse = es;
-  es.addEventListener('todo', guard(async () => { state.todos = (await api('/todos')).todos; renderTodos(); renderChrome(); renderDetail(); }));
+  es.addEventListener('todo', guard(async (e) => {
+    let op = null; try { op = JSON.parse(e.data).op; } catch (_) { /* */ }
+    const [t, l] = await Promise.all([api('/todos'), op === 'reload' ? api('/lists') : null]);
+    state.todos = t.todos; if (l) state.lists = l.lists;
+    if (state.route === 'calendar') route(); else { renderTodos(); renderChrome(); renderDetail(); }
+  }));
   es.addEventListener('bus', (e) => {
     const m = JSON.parse(e.data);
     const i = state.messages.findIndex((x) => x.id === m.id);
@@ -275,7 +281,9 @@ function route() {
   state.selected = null;
   const view = clear($('#view'));
   const r = state.route;
-  if (isTaskRoute(r)) viewTasks(view);
+  if (r === 'calendar') viewCalendar(view);
+  else if (isTaskRoute(r)) viewTasks(view);
+  else if (r === 'calendar') viewCalendar(view);
   else if (r === 'share') viewShare(view);
   else if (r === 'bus') viewBus(view);
   else if (r === 'assistant') viewAssistant(view);
@@ -295,11 +303,12 @@ function renderChrome() {
   side.appendChild(h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('check')), 'Todo'));
   side.appendChild(item('search', 'Suche', 'search', h('span', { class: 'count' }, '/')));
   NAV.forEach((n) => side.appendChild(item(n.id, n.label, n.icon, h('span', { class: 'count' }, n.id === 'done' ? '' : c[n.id] || ''))));
+  side.appendChild(item('calendar', 'Kalender', 'cal'));
   side.appendChild(h('div', { class: 'nav-sep' }));
   side.appendChild(h('div', { class: 'nav-title' }, 'Listen', h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Neue Liste', onclick: newList }, icon('plus'))));
   state.lists.forEach((l) => {
     const n = state.todos.filter((t) => open(t) && t.list_id === l.id).length;
-    side.appendChild(h('button', { class: 'nav-item' + (state.route === 'list/' + l.id ? ' on' : ''), onclick: () => go('list/' + l.id) }, icon('list'), h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis' }, l.name), h('span', { class: 'count' }, n || '')));
+    side.appendChild(h('button', { class: 'nav-item' + (state.route === 'list/' + l.id ? ' on' : ''), onclick: () => go('list/' + l.id) }, icon(l.mine === false || (l.members || []).length ? 'users' : 'list'), h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis' }, l.name), h('span', { class: 'count' }, n || '')));
   });
   if (state.filters.length) {
     side.appendChild(h('div', { class: 'nav-title' }, 'Filter'));
@@ -322,7 +331,7 @@ function renderChrome() {
 
   const tabs = clear($('#tabbar'));
   const tab = (id, label, ic, badge, active) => h('button', { class: 'tab' + (active ? ' on' : ''), onclick: () => go(id) }, icon(ic), label, badge ? h('span', { class: 'badge' }, badge) : null);
-  const taskRoute = isTaskRoute(state.route);
+  const taskRoute = isTaskRoute(state.route) || state.route === 'calendar';
   tabs.appendChild(tab('today', 'Aufgaben', 'check', c.today, taskRoute));
   tabs.appendChild(tab('bus', 'Bus', 'bus', state.unread, state.route === 'bus'));
   tabs.appendChild(tab('assistant', 'Assistent', 'bot', 0, state.route === 'assistant'));
@@ -394,11 +403,15 @@ function viewTasks(view) {
   const hour = new Date().getHours();
   const greet = hour < 11 ? 'Guten Morgen' : hour < 18 ? 'Hallo' : 'Guten Abend';
   view.appendChild(h('div', { class: 'page-head' },
-    h('div', {}, h('h1', {}, list ? list.name : titles[r]), h('div', { class: 'muted small', id: 'subtitle' }, `${greet}, ${state.user.username}`)),
+    h('div', {}, h('h1', {}, list ? list.name : titles[r]), h('div', { class: 'muted small', id: 'subtitle' },
+      list && list.mine === false ? `Geteilt von ${list.owner}` : list && (list.members || []).length ? 'Geteilt mit ' + list.members.join(', ') : `${greet}, ${state.user.username}`)),
     list ? h('div', { class: 'row' },
-      h('button', { class: 'icon-btn', 'aria-label': 'Liste umbenennen', onclick: guard(async () => { const n = prompt('Neuer Name:', list.name); if (!n || !n.trim()) return; Object.assign(list, await api('/lists/' + list.id, { method: 'PATCH', body: { name: n.trim() } })); route(); }) }, icon('more')),
-      h('button', { class: 'icon-btn', 'aria-label': 'Liste löschen', onclick: guard(async () => { if (!confirm(`Liste „${list.name}“ löschen? Aufgaben bleiben erhalten.`)) return; await api('/lists/' + list.id, { method: 'DELETE' }); state.lists = state.lists.filter((x) => x.id !== list.id); state.todos.forEach((t) => { if (t.list_id === list.id) t.list_id = null; }); go('today'); }) }, icon('trash'))) : null,
-    !list && r !== 'done' ? h('button', { class: 'icon-btn search-btn', 'aria-label': 'Suchen', onclick: () => go('search') }, icon('search')) : null,
+      list.mine !== false ? h('button', { class: 'icon-btn', 'aria-label': 'Liste teilen', title: 'Teilen', onclick: () => shareListSheet(list) }, icon('users')) : null,
+      list.mine === false ? btn('Verlassen', 'sm', guard(async () => { if (!confirm(`Geteilte Liste „${list.name}“ verlassen?`)) return; await api(`/lists/${list.id}/members/${encodeURIComponent(state.user.username)}`, { method: 'DELETE' }); state.lists = state.lists.filter((x) => x.id !== list.id); go('today'); })) : null,
+      list.mine === false ? null : h('button', { class: 'icon-btn', 'aria-label': 'Liste umbenennen', onclick: guard(async () => { const n = prompt('Neuer Name:', list.name); if (!n || !n.trim()) return; Object.assign(list, await api('/lists/' + list.id, { method: 'PATCH', body: { name: n.trim() } })); route(); }) }, icon('more')),
+      list.mine === false ? null : h('button', { class: 'icon-btn', 'aria-label': 'Liste löschen', onclick: guard(async () => { if (!confirm(`Liste „${list.name}“ löschen? Aufgaben bleiben erhalten.`)) return; await api('/lists/' + list.id, { method: 'DELETE' }); state.lists = state.lists.filter((x) => x.id !== list.id); state.todos.forEach((t) => { if (t.list_id === list.id) t.list_id = null; }); go('today'); }) }, icon('trash'))) : null,
+    !list && r !== 'done' ? h('div', { class: 'row search-btn', style: 'gap:0' }, h('button', { class: 'icon-btn', 'aria-label': 'Kalender', onclick: () => go('calendar') }, icon('cal')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Suchen', onclick: () => go('search') }, icon('search'))) : null,
     r === 'done' ? btn('Aufräumen', 'sm danger', guard(async () => { if (!confirm('Alle erledigten Aufgaben löschen?')) return; await api('/todos/clear-done', { method: 'POST' }); }), 'trash') : null));
   if (r !== 'done') view.appendChild(quickBar());
   view.appendChild(h('div', { id: 'draft' }));
@@ -439,6 +452,82 @@ function viewShare(view) {
     btn('Verwerfen', 'sm', () => go('today')))));
   view.appendChild(h('div', { id: 'draft' }));
 }
+
+function shareListSheet(list) {
+  const name = h('input', { type: 'text', placeholder: 'Benutzername', autocapitalize: 'none', maxlength: 64 });
+  const members = h('div', { class: 'col', style: 'gap:6px' });
+  const draw = () => {
+    clear(members);
+    if (!(list.members || []).length) members.appendChild(h('div', { class: 'muted small' }, 'Noch mit niemandem geteilt.'));
+    (list.members || []).forEach((m) => members.appendChild(h('div', { class: 'row' }, h('div', { class: 'avatar' }, m[0]), h('span', { class: 'grow' }, m),
+      btn('Entfernen', 'sm danger', guard(async () => { await api(`/lists/${list.id}/members/${encodeURIComponent(m)}`, { method: 'DELETE' }); list.members = list.members.filter((x) => x !== m); draw(); renderChrome(); })))));
+  };
+  draw();
+  sheet(h('div', { class: 'col' }, h('h2', {}, `„${list.name}“ teilen`),
+    h('p', { class: 'muted small' }, 'Mitglieder sehen alle Aufgaben dieser Liste, können neue anlegen, bearbeiten und abhaken. Deine anderen Aufgaben bleiben privat.'),
+    members,
+    h('form', { class: 'row', onsubmit: guard(async (e) => {
+      e.preventDefault(); const u = name.value.trim(); if (!u) return;
+      const r = await api(`/lists/${list.id}/members`, { method: 'POST', body: { username: u } });
+      list.members = [...new Set([...(list.members || []), r.username])].sort(); name.value = ''; draw(); renderChrome(); toast(`Mit ${r.username} geteilt`, 'ok');
+    }) }, name, h('button', { class: 'btn primary', type: 'submit' }, 'Hinzufügen'))));
+  name.focus();
+}
+
+function viewCalendar(view) {
+  const today = dayStart(new Date());
+  state.calMonth = state.calMonth || new Date(today.getFullYear(), today.getMonth(), 1);
+  state.calDay = state.calDay || today;
+  const m = state.calMonth;
+  const monthName = m.toLocaleDateString('de-DE', { month: 'long', year: 'numeric' });
+  const shift = (n) => { state.calMonth = new Date(m.getFullYear(), m.getMonth() + n, 1); route(); };
+  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, monthName), h('div', { class: 'muted small' }, 'Fällige Aufgaben im Überblick')),
+    h('div', { class: 'row', style: 'gap:4px' }, h('button', { class: 'icon-btn', 'aria-label': 'Vorheriger Monat', onclick: () => shift(-1) }, icon('chevl')),
+      btn('Heute', 'sm', () => { state.calMonth = new Date(today.getFullYear(), today.getMonth(), 1); state.calDay = today; route(); }),
+      h('button', { class: 'icon-btn', 'aria-label': 'Nächster Monat', onclick: () => shift(1) }, icon('chevr')))));
+  const byDay = {};
+  state.todos.filter((t) => !t.parent_id && t.due_at).forEach((t) => { const k = dayStart(new Date(t.due_at)).getTime(); (byDay[k] = byDay[k] || []).push(t); });
+  const grid = h('div', { class: 'cal glass' });
+  ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'].forEach((d) => grid.appendChild(h('div', { class: 'cal-head' }, d)));
+  const first = new Date(m.getFullYear(), m.getMonth(), 1);
+  const start = new Date(first); start.setDate(1 - ((first.getDay() + 6) % 7));
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    if (i >= 35 && d.getMonth() !== m.getMonth()) break;
+    const items = (byDay[dayStart(d).getTime()] || []).sort((a, b) => a.done - b.done || a.due_at.localeCompare(b.due_at));
+    const cls = ['cal-day', d.getMonth() !== m.getMonth() ? 'other' : '', d.getTime() === today.getTime() ? 'today' : '',
+      d.getTime() === state.calDay.getTime() ? 'sel' : ''].join(' ');
+    grid.appendChild(h('button', { class: cls, type: 'button', 'aria-label': d.toLocaleDateString('de-DE', { dateStyle: 'full' }) + `, ${items.length} Aufgaben`,
+      onclick: () => { state.calDay = d; route(); } },
+      h('span', { class: 'cal-num' }, d.getDate()),
+      h('div', { class: 'cal-items' }, items.slice(0, 3).map((t) => h('span', { class: 'cal-item' + (t.done ? ' done' : '') + (t.priority === 3 ? ' high' : '') }, t.title))),
+      items.length > 3 ? h('span', { class: 'cal-more' }, '+' + (items.length - 3)) : null,
+      items.length ? h('span', { class: 'cal-dots' }, items.slice(0, 4).map((t) => h('i', { class: t.done ? 'done' : '' }))) : null));
+  }
+  view.appendChild(grid);
+  const sel = state.calDay;
+  const input = h('input', { type: 'text', placeholder: 'Aufgabe für diesen Tag …', maxlength: 300, enterkeyhint: 'done' });
+  view.appendChild(h('div', { class: 'row' }, h('h2', { class: 'grow' }, sel.toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'long' }))));
+  view.appendChild(h('form', { class: 'quick glass', onsubmit: guard(async (e) => {
+    e.preventDefault(); const { title, tags } = splitTags(input.value); if (!title) return;
+    const due = new Date(sel); due.setHours(9, 0, 0, 0);
+    state.todos.push(await api('/todos', { method: 'POST', body: { title, tags, due_at: due.toISOString() } })); input.value = ''; route();
+  }) }, input, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Hinzufügen' }, icon('plus'))));
+  const dayItems = byDay[sel.getTime()] || [];
+  const rows = h('div', { class: 'rows glass' });
+  dayItems.forEach((t) => rows.appendChild(todoRow(t)));
+  view.appendChild(dayItems.length ? rows : h('div', { class: 'empty' }, 'Nichts fällig an diesem Tag.'));
+}
+
+async function uploadFiles(todoId, files) {
+  for (const f of files) {
+    if (f.size > 10 * 1024 * 1024) { toast(`${f.name}: zu groß (max. 10 MB)`, 'err'); continue; }
+    const res = await fetch(`/api/todos/${todoId}/attachments`, { method: 'POST', credentials: 'same-origin', body: f,
+      headers: { 'X-CSRF-Token': state.csrf, 'X-Filename': encodeURIComponent(f.name), 'Content-Type': 'application/octet-stream' } });
+    if (!res.ok) { let msg = 'Upload fehlgeschlagen'; try { msg = (await res.json()).detail || msg; } catch (_) { /* */ } toast(`${f.name}: ${msg}`, 'err'); }
+  }
+}
+const fmtSize = (n) => (n < 1024 ? n + ' B' : n < 1048576 ? (n / 1024).toFixed(0) + ' KB' : (n / 1048576).toFixed(1) + ' MB');
 
 function viewSearch(view) {
   const f = state.search;
@@ -735,6 +824,22 @@ function detailBody(t) {
     }
   };
   drawLoc();
+  const attBox = h('div', { class: 'col', style: 'gap:8px' });
+  const file = h('input', { type: 'file', multiple: true, class: 'hidden', accept: 'image/png,image/jpeg,image/gif,image/webp,application/pdf,text/plain' });
+  file.addEventListener('change', guard(async () => { await uploadFiles(t.id, [...file.files]); file.value = ''; drawAtt(); }));
+  const drawAtt = guard(async () => {
+    const { attachments } = await api(`/todos/${t.id}/attachments`);
+    clear(attBox);
+    const grid = h('div', { class: 'att-grid' });
+    attachments.forEach((a) => grid.appendChild(h('div', { class: 'att' },
+      a.mime.startsWith('image/') ? h('a', { href: a.url, target: '_blank', rel: 'noopener' }, h('img', { src: a.url, alt: a.filename, loading: 'lazy' }))
+        : h('a', { class: 'att-file', href: a.url, target: '_blank', rel: 'noopener' }, icon('clip'), h('span', {}, a.filename)),
+      h('div', { class: 'row small muted', style: 'gap:4px' }, h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, fmtSize(a.size)),
+        h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Anhang löschen', onclick: guard(async () => { if (!confirm(`„${a.filename}“ löschen?`)) return; await api('/attachments/' + a.id, { method: 'DELETE' }); drawAtt(); }) }, icon('trash'))))));
+    if (attachments.length) attBox.appendChild(grid);
+    attBox.appendChild(h('div', { class: 'row' }, btn('Datei anhängen', 'sm', () => file.click(), 'clip'), h('span', { class: 'small muted' }, 'Bilder, PDF, Text · max. 10 MB'), file));
+  });
+  drawAtt();
   const subsBox = h('div', { class: 'col', style: 'gap:2px' });
   const drawSubs = () => {
     clear(subsBox);
@@ -762,6 +867,7 @@ function detailBody(t) {
     h('label', { class: 'field' }, 'Tags', tagsIn),
     h('div', { class: 'field' }, 'Wiederholung', freq, recExtra),
     h('div', { class: 'field' }, 'Erinnerungen' + (t.due_at ? '' : ' (wirken erst mit Fälligkeit)'), remBox),
+    h('div', { class: 'field' }, 'Anhänge', attBox),
     h('div', { class: 'field' }, 'Ort (Erinnerung beim Ankommen, Android-App)', locBox),
     !t.done ? h('div', { class: 'field' }, 'Erinnere mich', h('div', { class: 'row wrap' }, snoozeBtn('in 10 Min.', 10), snoozeBtn('in 1 Std.', 60), snoozeBtn('morgen 9:00', tomorrow9))) : null,
     h('div', { class: 'col', style: 'gap:6px' }, h('div', { class: 'row' }, h('span', { class: 'muted small grow' }, 'Unteraufgaben'), aiBtn), subsBox,
@@ -1063,6 +1169,8 @@ function viewSettings(view) {
   // Push
   view.appendChild(pushCard());
   view.appendChild(summaryCard());
+  const icsBox = h('div', { class: 'glass card col' });
+  view.appendChild(icsBox); icsCard(icsBox);
   const mailBox = h('div', { class: 'glass card col' });
   view.appendChild(mailBox); mailCard(mailBox);
   const devicesBox = h('div', { class: 'glass card col' });
@@ -1181,6 +1289,20 @@ function deviceSheet(device) {
   h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, icon('send'), 'Senden'))));
   title.focus();
 }
+
+const icsCard = guard(async (box) => {
+  const { enabled } = await api('/calendar/feed');
+  clear(box);
+  box.appendChild(h('h3', {}, 'Kalender-Abo (ICS)'));
+  box.appendChild(h('p', { class: 'muted small' }, 'Fällige Aufgaben als Termine in deinem Handy-, Thunderbird-, Outlook- oder Nextcloud-Kalender. Der Link ist geheim – wer ihn hat, sieht deine Termine.'));
+  box.appendChild(h('div', { class: 'row wrap' },
+    btn(enabled ? 'Neuen Link erzeugen' : 'Link erzeugen', 'sm', guard(async () => {
+      if (enabled && !confirm('Neuer Link – der alte funktioniert dann nicht mehr. Weiter?')) return;
+      const { url } = await api('/calendar/feed', { method: 'POST' }); keySheet('Kalender-Abo', url); icsCard(box);
+    }), 'cal'),
+    enabled ? btn('Abo abschalten', 'sm danger', guard(async () => { await api('/calendar/feed', { method: 'DELETE' }); icsCard(box); })) : null,
+    enabled ? h('span', { class: 'chip dotted ok' }, 'aktiv') : null));
+});
 
 function summaryCard() {
   const cur = state.settings.summary_time;

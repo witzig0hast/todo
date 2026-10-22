@@ -174,6 +174,23 @@ CREATE TABLE IF NOT EXISTS mail_accounts (
   folder TEXT NOT NULL DEFAULT 'INBOX', allowed_senders TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
   last_check_at TEXT, last_error TEXT, imported INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS list_members (
+  list_id INTEGER NOT NULL REFERENCES lists(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  added_at TEXT NOT NULL,
+  PRIMARY KEY (list_id, user_id)
+);
+CREATE TABLE IF NOT EXISTS attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  stored_name TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attachments_todo ON attachments(todo_id);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -208,6 +225,7 @@ COLUMNS = [
     ("device_messages", "options", "TEXT"),                     # JSON-Liste Antwortoptionen
     ("user_settings", "summary_time", "TEXT"),                  # "08:00" = Morgen-Zusammenfassung, NULL = aus
     ("user_settings", "summary_sent_on", "TEXT"),               # "YYYY-MM-DD"
+    ("user_settings", "ics_token_hash", "TEXT"),                # privater Kalender-Feed
 ]
 
 
