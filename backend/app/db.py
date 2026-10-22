@@ -168,6 +168,12 @@ CREATE TABLE IF NOT EXISTS rules (
   last_fired_at TEXT,
   fire_count INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS mail_accounts (
+  user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT NOT NULL, password_enc TEXT NOT NULL,
+  folder TEXT NOT NULL DEFAULT 'INBOX', allowed_senders TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+  last_check_at TEXT, last_error TEXT, imported INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -200,6 +206,8 @@ COLUMNS = [
     ("device_messages", "bus_message_id", "INTEGER"),
     ("device_messages", "reply_token", "TEXT"),
     ("device_messages", "options", "TEXT"),                     # JSON-Liste Antwortoptionen
+    ("user_settings", "summary_time", "TEXT"),                  # "08:00" = Morgen-Zusammenfassung, NULL = aus
+    ("user_settings", "summary_sent_on", "TEXT"),               # "YYYY-MM-DD"
 ]
 
 

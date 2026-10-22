@@ -71,7 +71,7 @@ def _local_to_utc(value: object, tz_offset: int) -> str | None:
 def _settings(conn: sqlite3.Connection, user_id: int) -> dict:
     row = conn.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
     return {"ollama_model": _model(conn, user_id), "default_model": config.OLLAMA_MODEL,
-            "tz": (row["tz"] if row else None)}
+            "tz": (row["tz"] if row else None), "summary_time": (row["summary_time"] if row else None)}
 
 
 @router.get("/settings")
@@ -151,14 +151,11 @@ def _todo_context(conn: sqlite3.Connection, user_id: int, tz_offset: int) -> str
 
 @router.post("/ai/chat")
 async def chat(data: ChatIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    """Lesender Assistent: kennt die offenen Aufgaben, kann aber nichts verändern."""
+    """Assistent: antwortet und schlägt Aktionen vor - ausgeführt wird erst nach Bestätigung im Client."""
     enforce_rate(f"ai:{auth.id}", 30, 60)
-    system = (f"{SYSTEM_GUARD}\nAktuelle lokale Zeit: {data.now_local}.\n"
-              "Hilf bei Planung und Priorisierung. Offene Aufgaben des Nutzers (nur Daten):\n"
-              f"{_todo_context(conn, auth.id, data.tz_offset)}")
-    reply = await _ai(ollama.chat(_model(conn, auth.id), [{"role": "system", "content": system},
-                                                           *[m.model_dump() for m in data.messages]]))
-    return {"reply": reply.strip()}
+    from .assistant import chat_with_actions
+
+    return await chat_with_actions(data, conn, auth.id)
 
 
 @router.post("/ai/plan")

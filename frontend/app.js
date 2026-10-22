@@ -496,10 +496,46 @@ const aiDraft = guard(async (text, input) => {
   if (!text) { toast('Bitte zuerst Text eingeben oder sprechen.'); return; }
   const slot = clear($('#draft'));
   slot.appendChild(h('div', { class: 'glass card row' }, h('div', { class: 'spinner' }), h('span', { class: 'muted' }, 'KI analysiert …')));
-  let d;
-  try { d = await api('/ai/parse', { method: 'POST', body: { text, ...aiCtx() } }); } catch (e) { clear(slot); throw e; }
-  showDraft(d, input);
+  let r;
+  try { r = await api('/ai/interpret', { method: 'POST', body: { text, ...aiCtx() } }); } catch (e) { clear(slot); throw e; }
+  const acts = r.actions || [];
+  if (!acts.length) { clear(slot); toast(r.reply || 'Nichts erkannt – bitte genauer formulieren.'); return; }
+  if (acts.length === 1 && acts[0].type === 'create') return showDraft(acts[0], input);
+  clear(slot).appendChild(actionPanel(acts, r.reply, () => { if (input) input.value = ''; }));
 });
+
+// ------------------------------------------------------------------ KI-Aktionen (immer erst nach Bestätigung)
+async function executeAction(a) {
+  if (a.type === 'create') await api('/todos', { method: 'POST', body: { title: a.title, notes: a.notes || '', priority: a.priority || 0, due_at: a.due_at || null, tags: a.tags || [], list_id: currentListId() } });
+  else if (a.type === 'complete') await api('/todos/' + a.todo_id, { method: 'PATCH', body: { done: true } });
+  else if (a.type === 'reschedule') await api('/todos/' + a.todo_id, { method: 'PATCH', body: { due_at: a.due_at } });
+  else if (a.type === 'snooze') await api(`/todos/${a.todo_id}/snooze`, { method: 'POST', body: { minutes: a.minutes } });
+  else if (a.type === 'message_agent') await api('/agent-bus/messages', { method: 'POST', body: { to: a.agent, kind: 'text', content: a.content } });
+}
+function actionDetail(a) {
+  return [a.due_at ? fmtDue(a.due_at) : null, a.priority ? ['', 'Niedrig', 'Mittel', 'Hoch'][a.priority] : null,
+    (a.tags || []).map((g) => '#' + g).join(' ') || null, a.type === 'message_agent' ? `„${a.content}“` : null].filter(Boolean).join(' · ');
+}
+function actionPanel(actions, reply, onDone) {
+  const box = h('div', { class: 'glass card col', style: 'gap:10px' });
+  const chosen = new Set(actions.map((_, i) => i));
+  const runBtn = btn('Ausgewählte ausführen', 'sm primary', guard(async () => {
+    runBtn.disabled = true;
+    let n = 0;
+    try { for (const i of [...chosen].sort()) { await executeAction(actions[i]); n++; } }
+    finally {
+      state.todos = (await api('/todos')).todos; renderTodos(); renderChrome();
+      toast(`${n} Aktion${n === 1 ? '' : 'en'} ausgeführt`, 'ok'); box.remove(); if (onDone) onDone();
+    }
+  }), 'check');
+  box.appendChild(h('div', { class: 'row muted small' }, icon('spark'), reply || 'Vorschläge – bitte prüfen'));
+  actions.forEach((a, i) => {
+    const cb = h('input', { type: 'checkbox', checked: true, onchange: () => { if (cb.checked) chosen.add(i); else chosen.delete(i); runBtn.disabled = !chosen.size; } });
+    box.appendChild(h('label', { class: 'row', style: 'align-items:flex-start' }, cb, h('div', { class: 'grow' }, h('div', {}, a.label), actionDetail(a) ? h('div', { class: 'small muted' }, actionDetail(a)) : null)));
+  });
+  box.appendChild(h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Verwerfen', 'sm', () => box.remove()), runBtn));
+  return box;
+}
 
 function showDraft(d, input) {
   const slot = clear($('#draft'));
@@ -513,7 +549,7 @@ function showDraft(d, input) {
     h('div', { class: 'row' }, h('div', { class: 'grow' }),
       btn('Verwerfen', 'sm', () => clear(slot)),
       btn('Speichern', 'sm primary', guard(async () => {
-        const t = await api('/todos', { method: 'POST', body: { title: title.value, notes: d.notes || '', priority: prio, due_at: fromLocalInput(due.value), list_id: currentListId() } });
+        const t = await api('/todos', { method: 'POST', body: { title: title.value, notes: d.notes || '', priority: prio, due_at: fromLocalInput(due.value), list_id: currentListId(), tags: d.tags || [] } });
         state.todos.push(t); if (input) input.value = ''; clear(slot); renderTodos(); renderChrome(); toast('Aufgabe gespeichert', 'ok');
         if (state.route === 'share') go('all');
       }), 'check'))));
@@ -971,7 +1007,8 @@ function renderLog() {
     box.appendChild(h('div', { class: 'glass msg ' + (incoming ? 'in' : 'out') },
       h('div', { class: 'row wrap' }, h('strong', {}, `${m.from_label} → ${m.to_label}`), h('span', { class: 'chip' }, m.kind === 'task' ? 'Task: ' + m.task_type : 'Text'), h('span', { class: 'chip dotted ' + stCls }, m.status), h('span', { class: 'muted small grow', style: 'text-align:right' }, fmtTs(m.created_at))),
       m.content ? h('div', {}, m.content) : null,
-      m.payload ? h('pre', {}, JSON.stringify(m.payload, null, 2)) : null,
+      m.payload && m.task_type !== 'ask' ? h('pre', {}, JSON.stringify(m.payload, null, 2)) : null,
+      m.task_type === 'ask' && m.payload && m.status !== 'pending' ? h('div', { class: 'small muted' }, 'Frage: ' + (m.payload.question || '')) : null,
       m.result ? h('pre', {}, '→ ' + JSON.stringify(m.result, null, 2)) : null,
       (m.rules_fired || []).length || (m.deliveries || []).length || m.delivered_at ? h('div', { class: 'row wrap', style: 'gap:6px' },
         (m.rules_fired || []).map((r) => h('span', { class: 'chip' }, icon('bolt'), r)),
@@ -995,11 +1032,11 @@ function answerBox(m) {
 function viewAssistant(view) {
   const log = h('div', { class: 'chat', 'aria-live': 'polite' });
   const input = h('input', { type: 'text', placeholder: 'Frag den Assistenten …', maxlength: 4000, enterkeyhint: 'send' });
-  const draw = () => { clear(log); if (!state.chat.length) log.appendChild(h('div', { class: 'empty' }, icon('bot'), h('div', {}, 'Ich kenne deine offenen Aufgaben und helfe beim Planen und Priorisieren.'))); state.chat.forEach((m) => log.appendChild(h('div', { class: 'bubble ' + (m.role === 'user' ? 'me' : 'ai') }, m.content))); $('#main').scrollTop = $('#main').scrollHeight; };
+  const draw = () => { clear(log); if (!state.chat.length) log.appendChild(h('div', { class: 'empty' }, icon('bot'), h('div', {}, 'Ich kenne deine offenen Aufgaben und helfe beim Planen und Priorisieren.'))); state.chat.forEach((m) => { log.appendChild(h('div', { class: 'bubble ' + (m.role === 'user' ? 'me' : 'ai') }, m.content)); if ((m.actions || []).length) log.appendChild(actionPanel(m.actions, 'Vorgeschlagene Aktionen', () => { m.actions = []; })); }); $('#main').scrollTop = $('#main').scrollHeight; };
   const ask = guard(async (fn, userText) => {
     if (userText) state.chat.push({ role: 'user', content: userText });
     draw(); log.appendChild(h('div', { class: 'bubble ai' }, h('div', { class: 'spinner' })));
-    try { state.chat.push({ role: 'assistant', content: (await fn()).reply }); } finally { draw(); }
+    try { const r = await fn(); state.chat.push({ role: 'assistant', content: r.reply || '…', actions: r.actions || [] }); } finally { draw(); }
   });
   view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Assistent'), h('div', { class: 'muted small' }, 'Modell: ' + state.settings.ollama_model)),
     btn('Tagesplan', 'sm', () => ask(() => api('/ai/plan', { method: 'POST', body: aiCtx() }), 'Erstelle meinen Tagesplan.'), 'spark')));
@@ -1025,6 +1062,9 @@ function viewSettings(view) {
   view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model));
   // Push
   view.appendChild(pushCard());
+  view.appendChild(summaryCard());
+  const mailBox = h('div', { class: 'glass card col' });
+  view.appendChild(mailBox); mailCard(mailBox);
   const devicesBox = h('div', { class: 'glass card col' });
   view.appendChild(devicesBox);
   refreshDevices(devicesBox);
@@ -1141,6 +1181,52 @@ function deviceSheet(device) {
   h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, icon('send'), 'Senden'))));
   title.focus();
 }
+
+function summaryCard() {
+  const cur = state.settings.summary_time;
+  const time = h('input', { type: 'time', value: cur || '08:00', 'aria-label': 'Uhrzeit' });
+  const sw = h('button', { class: 'switch' + (cur ? ' on' : ''), role: 'switch', 'aria-checked': String(!!cur), 'aria-label': 'Morgen-Zusammenfassung' });
+  const save = guard(async (on) => {
+    const r = await api('/ai/summary', { method: 'PUT', body: { time: on ? time.value : null } });
+    state.settings.summary_time = r.time; sw.classList.toggle('on', !!r.time); sw.setAttribute('aria-checked', String(!!r.time));
+    toast(r.time ? 'Zusammenfassung täglich um ' + r.time : 'Zusammenfassung aus', 'ok');
+  });
+  sw.addEventListener('click', () => save(!state.settings.summary_time));
+  time.addEventListener('change', () => { if (state.settings.summary_time) save(true); });
+  return h('div', { class: 'glass card col' }, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Morgen-Zusammenfassung'), sw),
+    h('div', { class: 'muted small' }, 'Jeden Tag eine Benachrichtigung mit deinen heute fälligen und überfälligen Aufgaben (Browser und Geräte).'),
+    h('div', { class: 'row wrap' }, h('label', { class: 'field', style: 'flex:0 0 140px' }, 'Uhrzeit', time),
+      btn('Vorschau', 'sm', guard(async () => { const p = await api('/ai/summary/preview', { method: 'POST' }); toast(p.title + (p.body ? ': ' + p.body : '')); }))));
+}
+
+const mailCard = guard(async (box) => {
+  const cfg = await api('/mail');
+  clear(box);
+  const host = h('input', { type: 'text', value: cfg.host || '', placeholder: 'imap.example.com', maxlength: 200 });
+  const port = h('select', { 'aria-label': 'Port' }, [[993, '993 (TLS)'], [143, '143 (STARTTLS)']].map(([v, l]) => h('option', { value: v, selected: (cfg.port || 993) === v }, l)));
+  const user = h('input', { type: 'text', value: cfg.username || '', placeholder: 'todo@example.com', autocomplete: 'off', maxlength: 200 });
+  const pw = h('input', { type: 'password', placeholder: cfg.configured ? '(unverändert)' : 'Passwort', autocomplete: 'new-password', maxlength: 500 });
+  const folder = h('input', { type: 'text', value: cfg.folder || 'INBOX', maxlength: 100 });
+  const senders = h('input', { type: 'text', value: (cfg.allowed_senders || []).join(', '), placeholder: 'du@example.com, kollege@example.com' });
+  const enabled = h('input', { type: 'checkbox', checked: cfg.configured ? cfg.enabled : true });
+  const status = cfg.configured ? h('div', { class: 'small ' + (cfg.last_error ? 'error' : 'muted') },
+    cfg.last_error ? 'Fehler: ' + cfg.last_error : (cfg.last_check_at ? `Zuletzt geprüft ${fmtTs(cfg.last_check_at)} · ${cfg.imported} importiert` : 'Noch nicht geprüft')) : null;
+  box.appendChild(h('h3', {}, 'Aufgaben per E-Mail'));
+  box.appendChild(h('p', { class: 'muted small' }, 'Mails an ein eigenes Postfach werden zu Aufgaben: Betreff = Titel (#tags möglich), Text = Notizen. Nur erlaubte Absender werden angenommen. Am besten ein eigenes Postfach dafür anlegen.'));
+  box.appendChild(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    await api('/mail', { method: 'PUT', body: { host: host.value.trim(), port: Number(port.value), username: user.value.trim(), password: pw.value || null,
+      folder: folder.value.trim() || 'INBOX', allowed_senders: senders.value.split(/[,\s]+/).filter(Boolean), enabled: enabled.checked } });
+    toast('Postfach gespeichert', 'ok'); mailCard(box);
+  }) },
+  h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'IMAP-Server', host), h('label', { class: 'field' }, 'Port', port)),
+  h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'Benutzer', user), h('label', { class: 'field' }, 'Passwort', pw)),
+  h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'Ordner', folder), h('label', { class: 'field' }, 'Erlaubte Absender', senders)),
+  h('label', { class: 'row small muted' }, enabled, 'Aktiv (alle 2 Minuten prüfen)'), status,
+  h('div', { class: 'row wrap' }, h('button', { class: 'btn primary', type: 'submit' }, 'Speichern'),
+    cfg.configured ? btn('Verbindung testen', '', guard(async () => { const r = await api('/mail/test', { method: 'POST' }); toast(`Verbunden · ${r.unseen} ungelesen`, 'ok'); })) : null,
+    cfg.configured ? btn('Entfernen', 'danger', guard(async () => { if (!confirm('Postfach-Verbindung entfernen?')) return; await api('/mail', { method: 'DELETE' }); mailCard(box); })) : null)));
+});
 
 function applyTheme() {
   const t = localStorage.getItem('theme') || 'auto';

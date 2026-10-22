@@ -87,11 +87,14 @@ def notify_threadsafe(user_ids: list[int], title: str, body: str, url: str = "/"
 
 
 async def reminder_loop() -> None:
+    from . import assistant, mailin
+
     while True:
-        try:
-            await asyncio.to_thread(_check_due)
-        except Exception as exc:
-            log.warning("Erinnerungs-Lauf fehlgeschlagen: %s", exc)
+        for job in (_check_due, assistant.send_daily_summaries, mailin.poll_due_accounts):
+            try:
+                await asyncio.to_thread(job)
+            except Exception as exc:
+                log.warning("Hintergrund-Lauf %s fehlgeschlagen: %s", job.__name__, exc)
         await asyncio.sleep(60)
 
 
