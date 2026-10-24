@@ -9,7 +9,7 @@ from starlette.staticfiles import StaticFiles
 
 from . import (actions, admin_api, ai_api, ai_tools, assistant, attachments, auth_api, backup, bus, calendar_feed, channels,
                collab, config, db, devices, events, importer, integrations, invites, mailin, mfa, passkeys, push, push_api,
-               rules, sso, stats, templates, todos, trash)
+               rules, sso, stats, status, templates, todos, trash)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -62,7 +62,7 @@ def health():
 
 for module in (auth_api, mfa, passkeys, sso, admin_api, invites, backup, todos, collab, trash, templates, stats, attachments,
                calendar_feed, actions, bus, rules, devices, ai_api, assistant, ai_tools, mailin, push_api, integrations,
-               channels, importer):
+               channels, importer, status):
     app.include_router(module.router)
 
 

@@ -162,7 +162,7 @@ def login_verify(data: LoginIn, request: Request, response: Response, conn: sqli
     if user["status"] != "approved":
         raise HTTPException(403, "Dein Konto ist nicht freigegeben oder gesperrt.")
     conn.execute("UPDATE passkeys SET sign_count = ?, last_used_at = ? WHERE id = ?", (v.new_sign_count, now(), pk["id"]))
-    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"))
+    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"), client_ip(request))
     audit(conn, user["username"], "login", "passkey", user["id"], ip)
     _set_cookie(response, token)
     return {"user": user_public(user), "csrf": csrf}

@@ -79,13 +79,13 @@ def register(data: RegisterIn, request: Request, response: Response, conn: sqlit
         user_id = cur.lastrowid
         audit(conn, data.username, "register", f"role={role} status={status}" + (f" invite={invited['id']}" if invited else ""), user_id, ip)
     if invited:
-        token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+        token, _ = create_session(conn, user_id, request.headers.get("user-agent"), client_ip(request))
         _set_cookie(response, token)
         admins = [r["id"] for r in conn.execute("SELECT id FROM users WHERE role='admin' AND status='approved'")]
         push.notify_threadsafe(admins, "Neues Mitglied", f"{data.username} hat sich per Einladung registriert.", "/#/admin")
         return {"status": "approved", "admin": False}
     if first:
-        token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+        token, _ = create_session(conn, user_id, request.headers.get("user-agent"), client_ip(request))
         _set_cookie(response, token)
         return {"status": "approved", "admin": True}
     admins = [r["id"] for r in conn.execute("SELECT id FROM users WHERE role='admin' AND status='approved'")]
@@ -119,7 +119,7 @@ def login(data: Credentials, request: Request, response: Response, conn: sqlite3
         from .mfa import create_ticket
 
         return {"twofa_required": True, "ticket": create_ticket(conn, user["id"])}
-    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"))
+    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"), client_ip(request))
     audit(conn, user["username"], "login", None, user["id"], ip)
     _set_cookie(response, token)
     return {"user": user_public(user), "csrf": csrf}
@@ -171,3 +171,32 @@ def revoke_session(session_id: str, request: Request, auth: Auth = Depends(get_a
 def revoke_others(request: Request, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
     conn.execute("DELETE FROM sessions WHERE user_id = ? AND token_hash != ?", (auth.id, auth.token_hash))
     audit(conn, auth.user["username"], "session_revoke_others", None, auth.id, client_ip(request))
+
+
+# ------------------------------------------------------------------ Login-Warnung bei neuem Gerät
+class AlertsIn(BaseModel):
+    enabled: bool
+
+
+@router.get("/login-alerts")
+def login_alerts(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    row = conn.execute("SELECT login_alerts FROM user_settings WHERE user_id = ?", (auth.id,)).fetchone()
+    devices = conn.execute("SELECT fingerprint, label, first_seen_at, last_seen_at, last_ip FROM known_devices WHERE user_id = ? "
+                           "ORDER BY last_seen_at DESC", (auth.id,))
+    return {"enabled": bool(row["login_alerts"]) if row else True,
+            "devices": [{**dict(d), "id": d["fingerprint"][:16]} for d in devices]}
+
+
+@router.put("/login-alerts")
+def set_login_alerts(data: AlertsIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    conn.execute("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)", (auth.id,))
+    conn.execute("UPDATE user_settings SET login_alerts = ? WHERE user_id = ?", (int(data.enabled), auth.id))
+    return {"enabled": data.enabled}
+
+
+@router.delete("/known-devices/{fid}", status_code=204)
+def forget_device(fid: str, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    """Gerät vergessen: die nächste Anmeldung damit löst wieder eine Warnung aus."""
+    if len(fid) != 16 or conn.execute("DELETE FROM known_devices WHERE user_id = ? AND substr(fingerprint, 1, 16) = ?",
+                                      (auth.id, fid)).rowcount == 0:
+        raise HTTPException(404, "Gerät nicht gefunden.")

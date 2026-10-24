@@ -230,7 +230,7 @@ def _session_cookie(resp: Response, token: str) -> None:
 
 
 def _finish_login(conn: sqlite3.Connection, request: Request, user_id: int) -> RedirectResponse:
-    token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+    token, _ = create_session(conn, user_id, request.headers.get("user-agent"), client_ip(request))
     resp = _back("ok")
     _session_cookie(resp, token)
     return resp
@@ -399,7 +399,7 @@ def pending_create(request: Request, response: Response, conn: sqlite3.Connectio
     _consume(request, conn, response)
     status = _finish(conn, p, user_id, row["subject"], row["email"], bool(row["is_admin_group"]), pending_new, ip)
     if status == "ok":
-        token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+        token, _ = create_session(conn, user_id, request.headers.get("user-agent"), client_ip(request))
         _session_cookie(response, token)
     return {"status": status}
 
@@ -432,7 +432,7 @@ def pending_link(data: LinkExisting, request: Request, response: Response, conn:
         audit(conn, user["username"], "sso_link", f"{p['id']} (bei der Anmeldung)", user["id"], ip)
     _consume(request, conn, response)
     _finish(conn, p, user["id"], row["subject"], row["email"], bool(row["is_admin_group"]), None, ip)
-    token, _ = create_session(conn, user["id"], request.headers.get("user-agent"))
+    token, _ = create_session(conn, user["id"], request.headers.get("user-agent"), client_ip(request))
     _session_cookie(response, token)
     return {"status": "ok"}
 

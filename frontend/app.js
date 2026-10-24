@@ -2044,6 +2044,15 @@ const securityCard = guard(async (box) => {
     x.current ? null : btn('Abmelden', 'sm', guard(async () => { await api('/auth/sessions/' + x.id, { method: 'DELETE' }); securityCard(box); })))));
   if (ses.sessions.length > 1) sBox.appendChild(h('div', {}, btn('Alle anderen abmelden', 'sm danger', guard(async () => { await api('/auth/sessions/revoke-others', { method: 'POST' }); securityCard(box); toast('Andere Geräte abgemeldet', 'ok'); }))));
   box.appendChild(h('div', { class: 'field' }, 'Angemeldete Geräte', sBox));
+  // Warnung bei Anmeldung von neuem Gerät
+  const la = await api('/auth/login-alerts');
+  const laSw = h('button', { class: 'switch' + (la.enabled ? ' on' : ''), role: 'switch', 'aria-checked': String(la.enabled), 'aria-label': 'Login-Warnung',
+    onclick: guard(async () => { await api('/auth/login-alerts', { method: 'PUT', body: { enabled: !la.enabled } }); securityCard(box); }) });
+  const known = h('details', { class: 'small' }, h('summary', { class: 'muted' }, `Bekannte Geräte (${la.devices.length})`), h('div', { class: 'col', style: 'gap:4px;margin-top:8px' },
+    la.devices.map((d) => h('div', { class: 'row' }, h('span', { class: 'grow' }, d.label), h('span', { class: 'muted' }, 'zuletzt ' + fmtTs(d.last_seen_at) + (d.last_ip ? ' · ' + d.last_ip : '')),
+      h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Gerät vergessen', title: 'Vergessen – nächste Anmeldung warnt wieder', onclick: guard(async () => { await api('/auth/known-devices/' + d.id, { method: 'DELETE' }); securityCard(box); }) }, icon('x'))))));
+  box.appendChild(h('div', { class: 'field' }, h('div', { class: 'row' }, h('span', { class: 'grow' }, 'Warnung bei neuem Gerät'), laSw),
+    h('span', { class: 'small muted', style: 'font-weight:400' }, 'Meldet sich jemand mit einem neuen Browser oder Gerät an, bekommst du sofort eine Benachrichtigung (Push, App und deine Kanäle).'), known));
   // Export
   box.appendChild(h('div', { class: 'field' }, 'Deine Daten', h('div', { class: 'row wrap' },
     h('a', { class: 'btn sm', href: '/api/export?format=json', download: '' }, 'Export (JSON, komplett)'), h('a', { class: 'btn sm', href: '/api/export?format=csv', download: '' }, 'Aufgaben als CSV'))));
@@ -2295,7 +2304,21 @@ function pushCard() {
 
 // ------------------------------------------------------------------ Admin
 function viewAdmin(view) {
-  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Administration'), h('div', { class: 'muted small' }, 'Benutzer freigeben und verwalten'))));
+  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Administration'), h('div', { class: 'muted small' }, 'Systemstatus, Benutzer, Einladungen, Backups'))));
+  const stBox = h('div', { class: 'glass card col' });
+  view.appendChild(stBox);
+  const loadStatus = guard(async () => {
+    clear(stBox).appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Systemstatus'), h('div', { class: 'spinner' })));
+    const st = await api('/admin/status');
+    const label = { ok: 'Alles in Ordnung', warn: 'Hinweise', error: 'Probleme' }[st.overall];
+    clear(stBox).appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Systemstatus'), h('span', { class: 'chip dotted ' + (st.overall === 'ok' ? 'ok' : st.overall === 'warn' ? 'warn' : 'danger') }, label),
+      h('button', { class: 'icon-btn', 'aria-label': 'Neu prüfen', title: 'Neu prüfen', onclick: loadStatus }, icon('refresh'))));
+    st.checks.forEach((c) => stBox.appendChild(h('div', { class: 'status-row' },
+      h('span', { class: 'status-dot s-' + c.level, 'aria-label': { ok: 'OK', warn: 'Hinweis', error: 'Fehler' }[c.level] }),
+      h('strong', {}, c.name), h('div', { class: 'grow small' }, c.text, c.detail ? h('div', { class: 'muted' }, c.detail) : null))));
+    stBox.appendChild(h('div', { class: 'small muted' }, `Geprüft ${fmtTs(st.checked_at)} · Server läuft seit ${fmtTs(st.started_at)}`));
+  });
+  loadStatus();
   const users = h('div', { class: 'col' }), audit = h('div', { class: 'col', style: 'gap:4px' });
   view.appendChild(users);
   const iBox = h('div', { class: 'glass card col' });

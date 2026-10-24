@@ -81,15 +81,50 @@ def enforce_rate(key: str, limit: int, window: int) -> None:
 
 
 # ---------------------------------------------------------------- Sessions
-def create_session(conn: sqlite3.Connection, user_id: int, user_agent: str | None) -> tuple[str, str]:
+def create_session(conn: sqlite3.Connection, user_id: int, user_agent: str | None, ip: str | None = None) -> tuple[str, str]:
     token = secrets.token_urlsafe(32)
     csrf = secrets.token_urlsafe(24)
     expires = (datetime.now(timezone.utc) + timedelta(days=config.SESSION_DAYS)).strftime("%Y-%m-%dT%H:%M:%SZ")
     conn.execute(
-        "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, user_agent) VALUES (?,?,?,?,?,?)",
-        (sha256(token), user_id, csrf, now(), expires, (user_agent or "")[:200]),
+        "INSERT INTO sessions (token_hash, user_id, csrf, created_at, expires_at, user_agent, ip, last_seen_at) VALUES (?,?,?,?,?,?,?,?)",
+        (sha256(token), user_id, csrf, now(), expires, (user_agent or "")[:200], ip, now()),
     )
+    note_login(conn, user_id, user_agent, ip)
     return token, csrf
+
+
+def device_label(ua: str | None) -> str:
+    ua = ua or ""
+    os_ = next((n for k, n in (("Android", "Android"), ("iPhone", "iOS"), ("iPad", "iPadOS"), ("Windows", "Windows"),
+                               ("Mac OS", "macOS"), ("CrOS", "ChromeOS"), ("Linux", "Linux")) if k in ua), "unbekanntes System")
+    br = next((n for k, n in (("TodoAndroid", "Todo-App"), ("Edg/", "Edge"), ("Firefox/", "Firefox"), ("OPR/", "Opera"),
+                              ("Chrome/", "Chrome"), ("Safari/", "Safari")) if k in ua), "Browser/Client")
+    return f"{br} · {os_}"
+
+
+def note_login(conn: sqlite3.Connection, user_id: int, user_agent: str | None, ip: str | None) -> None:
+    """Merkt sich bekannte Geräte (Browser + System) und warnt bei einer Anmeldung von einem neuen."""
+    label = device_label(user_agent)
+    fp = sha256(label)
+    known = conn.execute("SELECT 1 FROM known_devices WHERE user_id = ? AND fingerprint = ?", (user_id, fp)).fetchone()
+    first_ever = conn.execute("SELECT COUNT(*) FROM known_devices WHERE user_id = ?", (user_id,)).fetchone()[0] == 0
+    conn.execute("INSERT INTO known_devices (user_id, fingerprint, label, first_seen_at, last_seen_at, last_ip) VALUES (?,?,?,?,?,?) "
+                 "ON CONFLICT(user_id, fingerprint) DO UPDATE SET last_seen_at = excluded.last_seen_at, last_ip = excluded.last_ip",
+                 (user_id, fp, label, now(), now(), ip))
+    if known or first_ever:
+        return
+    row = conn.execute("SELECT login_alerts FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+    if row is not None and not row["login_alerts"]:
+        return
+    from . import push  # spät importieren (Zirkelbezug)
+    from .recurrence import user_tz
+
+    local = datetime.now(timezone.utc).astimezone(user_tz(conn, user_id)).strftime("%d.%m. %H:%M")
+    conn.execute("INSERT INTO audit_log (at, user_id, actor, action, detail, ip) VALUES (?,?,?,?,?,?)",
+                 (now(), user_id, "system", "login_new_device", label, ip))
+    push.notify_payload_threadsafe([user_id], {
+        "title": "Neue Anmeldung bei Todo", "urgent": True, "url": "/#/settings",
+        "body": f"{label}{' · ' + ip if ip else ''} · {local}. Warst du das nicht? Einstellungen → Sicherheit: abmelden und Passwort ändern."})
 
 
 def _origin_ok(request: Request) -> bool:

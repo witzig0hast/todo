@@ -309,6 +309,15 @@ CREATE TABLE IF NOT EXISTS notify_channels (
   last_sent_at TEXT,
   last_error TEXT
 );
+CREATE TABLE IF NOT EXISTS known_devices (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  fingerprint TEXT NOT NULL,      -- Hash aus Browser + System
+  label TEXT NOT NULL,
+  first_seen_at TEXT NOT NULL,
+  last_seen_at TEXT NOT NULL,
+  last_ip TEXT,
+  PRIMARY KEY (user_id, fingerprint)
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -359,6 +368,7 @@ COLUMNS = [
     ("user_settings", "vision_model", "TEXT"),
     ("user_settings", "embed_model", "TEXT"),
     ("user_settings", "semantic_used", "INTEGER NOT NULL DEFAULT 0"),  # Hintergrund-Indexierung nur, wenn genutzt
+    ("user_settings", "login_alerts", "INTEGER NOT NULL DEFAULT 1"),   # Warnung bei Anmeldung von neuem Gerät
 ]
 
 

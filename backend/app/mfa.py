@@ -176,7 +176,7 @@ def login_second_step(data: TicketIn, request: Request, response: Response, conn
         audit(conn, user["username"] if user else "?", "2fa_failed", None, t["user_id"], ip)
         raise HTTPException(401, "Code ungültig.")
     conn.execute("DELETE FROM login_tickets WHERE ticket_hash = ?", (t["ticket_hash"],))
-    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"))
+    token, csrf = create_session(conn, user["id"], request.headers.get("user-agent"), client_ip(request))
     audit(conn, user["username"], "login", f"2fa:{kind}", user["id"], ip)
     _set_cookie(response, token)
     left = conn.execute("SELECT COUNT(*) FROM recovery_codes WHERE user_id = ? AND used_at IS NULL", (user["id"],)).fetchone()[0]

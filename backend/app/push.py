@@ -13,6 +13,9 @@ from . import config, devices
 from .db import now, session
 
 log = logging.getLogger("todo.push")
+# Laufzeit-Zähler für die Statusseite (seit dem Start des Containers)
+STATS: dict = {"sent": 0, "failed": 0, "removed": 0, "last_error": None, "last_error_at": None,
+               "loop_at": None, "job_errors": {}, "started_at": now()}
 
 
 def _key_path() -> Path:
@@ -55,6 +58,7 @@ def _send_sync(user_ids: list[int], payload: dict) -> None:
         subs = conn.execute(f"SELECT * FROM push_subscriptions WHERE user_id IN ({marks})", user_ids).fetchall()
         for s in subs:
             try:
+                STATS["sent"] += 1
                 webpush(
                     subscription_info={"endpoint": s["endpoint"], "keys": {"p256dh": s["p256dh"], "auth": s["auth"]}},
                     data=json.dumps(payload, ensure_ascii=False),
@@ -66,10 +70,13 @@ def _send_sync(user_ids: list[int], payload: dict) -> None:
                 status = getattr(exc.response, "status_code", None)
                 if status in (404, 410):
                     conn.execute("DELETE FROM push_subscriptions WHERE id = ?", (s["id"],))
+                    STATS["removed"] += 1
                 else:
                     log.warning("Push fehlgeschlagen (%s): %s", status, exc)
+                    STATS.update(failed=STATS["failed"] + 1, last_error=f"HTTP {status}", last_error_at=now())
             except Exception as exc:  # Netzwerkfehler dürfen nie die Anfrage stören
                 log.warning("Push fehlgeschlagen: %s", exc)
+                STATS.update(failed=STATS["failed"] + 1, last_error=str(exc)[:200], last_error_at=now())
 
 
 async def notify(user_ids: list[int], title: str, body: str, url: str = "/") -> None:
@@ -100,8 +107,11 @@ async def reminder_loop() -> None:
                     backup.daily_backup, trash.daily_purge, ai_tools.index_embeddings):
             try:
                 await asyncio.to_thread(job)
+                STATS["job_errors"].pop(job.__name__, None)
             except Exception as exc:
                 log.warning("Hintergrund-Lauf %s fehlgeschlagen: %s", job.__name__, exc)
+                STATS["job_errors"][job.__name__] = {"error": str(exc)[:200], "at": now()}
+        STATS["loop_at"] = now()
         await asyncio.sleep(60)
 
 

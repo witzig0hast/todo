@@ -74,6 +74,10 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
   Admin-Bereich auslösbar und herunterladbar; jeder Benutzer kann seine Daten als JSON oder CSV exportieren.
 - **PWA:** installierbar, App-Shell offline, Manifest + Icons (inkl. maskable), Teilen-Ziel. Hell/Dunkel automatisch.
 
+- **Betrieb:** Admin-**Statusseite** (Ollama inkl. fehlender Modelle, Whisper, Push, Android-Geräte, Mail-Abruf, Kanäle,
+  Hintergrundjobs, Datenbank, Speicherplatz, Konfiguration) und **Warnung bei Anmeldung von einem neuen Gerät** (Push, App
+  und alle Kanäle; bekannte Geräte in den Einstellungen einsehbar und vergessbar).
+
 ## Sicherheit
 
 argon2-Passwort-Hashes · Sitzungen als `HttpOnly`/`Secure`/`SameSite=Strict`-Cookie (nur Hash in der DB) ·
