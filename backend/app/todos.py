@@ -259,7 +259,8 @@ def snooze(conn: sqlite3.Connection, user_id: int, todo_id: int, minutes: int) -
 
 
 # ------------------------------------------------------------------ Aufgaben
-def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by: str = "user") -> dict:
+def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by: str = "user", publish: bool = True,
+                done: bool = False) -> dict:
     _check_list(conn, user_id, data.list_id)
     if data.parent_id is not None:
         try:
@@ -283,8 +284,13 @@ def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by
     if data.location:
         _geofences_changed(conn, user_id)
     row = conn.execute("SELECT * FROM todos WHERE id = ?", (cur.lastrowid,)).fetchone()
+    if done:  # z. B. beim Import bereits erledigter Aufgaben
+        conn.execute("UPDATE todos SET done = 1, done_at = ? WHERE id = ?", (ts, row["id"]))
+        sync_reminders(conn, row["id"])
+        row = conn.execute("SELECT * FROM todos WHERE id = ?", (row["id"],)).fetchone()
     out = enrich(conn, [todo_out(row)])[0]
-    _publish(conn, row, {"op": "created", "todo": out})
+    if publish:
+        _publish(conn, row, {"op": "created", "todo": out})
     return out
 
 

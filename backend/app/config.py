@@ -38,6 +38,17 @@ import json as _json  # noqa: E402
 
 PUBLIC_URL = os.getenv("PUBLIC_URL", "").rstrip("/")  # z. B. https://todo.example.com (für die Redirect-URI)
 LOCAL_AUTH_ENABLED = _bool("LOCAL_AUTH_ENABLED", True)
+
+# E-Mail-Versand (Benachrichtigungskanal „E-Mail“, Login-Warnung); leer = aus
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_USER = os.getenv("SMTP_USER", "")
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
+SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER)
+SMTP_TLS = os.getenv("SMTP_TLS", "starttls").lower()  # starttls | ssl | none
+# Benachrichtigungen an Server im internen Netz (ntfy/Gotify/Matrix im Heimnetz) erlauben: true = für alle,
+# admins = nur für Admins (Standard), false = nie. Schützt vor Anfragen ins interne Netz über fremde Konten.
+NOTIFY_PRIVATE_HOSTS = os.getenv("NOTIFY_PRIVATE_HOSTS", "admins").lower()
 OIDC_AUTO_APPROVE = _bool("OIDC_AUTO_APPROVE", False)
 
 

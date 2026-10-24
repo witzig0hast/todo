@@ -7,9 +7,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import FileResponse, JSONResponse, Response
 from starlette.staticfiles import StaticFiles
 
-from . import (actions, admin_api, ai_api, ai_tools, assistant, attachments, auth_api, backup, bus, calendar_feed, collab,
-               config, db, devices, events, invites, mailin, mfa, passkeys, push, push_api, rules, sso, stats, templates, todos,
-               trash)
+from . import (actions, admin_api, ai_api, ai_tools, assistant, attachments, auth_api, backup, bus, calendar_feed, channels,
+               collab, config, db, devices, events, importer, integrations, invites, mailin, mfa, passkeys, push, push_api,
+               rules, sso, stats, templates, todos, trash)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -34,7 +34,7 @@ app = FastAPI(title="Todo", lifespan=lifespan, docs_url=None, redoc_url=None, op
 @app.middleware("http")
 async def security_middleware(request: Request, call_next):
     declared = request.headers.get("content-length")
-    big = request.url.path in ("/api/voice/transcribe", "/api/ai/photo") or request.url.path.endswith("/attachments")
+    big = request.url.path in ("/api/voice/transcribe", "/api/ai/photo", "/api/import") or request.url.path.endswith("/attachments")
     limit = max(config.MAX_AUDIO_BYTES, 10 * 1024 * 1024) if big else config.MAX_BODY_BYTES
     if declared and declared.isdigit() and int(declared) > limit:
         return JSONResponse({"detail": "Anfrage zu groß."}, status_code=413)
@@ -61,7 +61,8 @@ def health():
 
 
 for module in (auth_api, mfa, passkeys, sso, admin_api, invites, backup, todos, collab, trash, templates, stats, attachments,
-               calendar_feed, actions, bus, rules, devices, ai_api, assistant, ai_tools, mailin, push_api):
+               calendar_feed, actions, bus, rules, devices, ai_api, assistant, ai_tools, mailin, push_api, integrations,
+               channels, importer):
     app.include_router(module.router)
 
 

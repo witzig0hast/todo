@@ -46,6 +46,12 @@ def _send_sync(user_ids: list[int], payload: dict) -> None:
                                       reply_token=payload.get("reply_token"), options=payload.get("options"))
         except Exception as exc:
             log.warning("Geräte-Zustellung fehlgeschlagen: %s", exc)
+        try:  # weitere Kanäle (ntfy, Gotify, Telegram, Matrix, E-Mail)
+            from . import channels
+
+            channels.deliver(conn, user_ids, payload)
+        except Exception as exc:
+            log.warning("Kanal-Zustellung fehlgeschlagen: %s", exc)
         subs = conn.execute(f"SELECT * FROM push_subscriptions WHERE user_id IN ({marks})", user_ids).fetchall()
         for s in subs:
             try:

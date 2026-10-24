@@ -54,6 +54,14 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
   `device.notify`. Dazu **Webhooks** (eingehende URL pro Agent, z. B. für GitHub, Uptime Kuma, Home Assistant),
   **Regeln** („wenn Agent X `failed` meldet → Aufgabe anlegen / Gerät benachrichtigen“) und **Rückfragen**, die du direkt aus
   der Benachrichtigung beantwortest (Task-Typ `ask`, bis zu 3 Antwort-Knöpfe oder Freitext).
+- **Integrationen:** persönliche **API-Tokens** (lesen/schreiben, widerrufbar) für **Home Assistant** (Sensoren „offen/heute/
+  überfällig“, Aufgaben per Assist-Sprachbefehl – YAML-Vorlage in den Einstellungen), Skripte (`/api/v1/...`) und
+  **KI-Agenten per MCP** (`/api/mcp`, z. B. `claude mcp add --transport http todo https://todo.example.com/api/mcp --header
+  "Authorization: Bearer tdk_…"`).
+- **Weitere Benachrichtigungskanäle:** ntfy, Gotify, Telegram, Matrix und E-Mail (SMTP) – je Kanal „alle“ oder „nur dringende“.
+  Server im internen Netz (z. B. Gotify im Heimnetz) dürfen standardmäßig nur Admins eintragen (`NOTIFY_PRIVATE_HOSTS`).
+- **Import:** Todoist (CSV), Google Tasks (Takeout `Tasks.json`), Microsoft To Do/Outlook bzw. jede Tabelle (CSV) und der
+  eigene JSON-Export – mit „Rückgängig“.
 - **Push:** Fälligkeits-Erinnerungen mit Knöpfen **Erledigt/Später**, Agent-Nachrichten, neue Registrierungen (an Admins) –
   Web-Push mit VAPID (Schlüssel werden beim ersten Start in `/data` erzeugt).
 - **Android-App** (`android/`): Nachrichten an einzelne Geräte, Aktionen und Antworten direkt in der Benachrichtigung,

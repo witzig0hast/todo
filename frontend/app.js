@@ -1873,6 +1873,11 @@ function viewSettings(view) {
   view.appendChild(icsBox); icsCard(icsBox);
   const mailBox = h('div', { class: 'glass card col' });
   view.appendChild(mailBox); mailCard(mailBox);
+  const chBox = h('div', { class: 'glass card col' });
+  view.appendChild(chBox); channelsCard(chBox);
+  const intBox = h('div', { class: 'glass card col' });
+  view.appendChild(intBox); integrationsCard(intBox);
+  view.appendChild(importCard());
   const devicesBox = h('div', { class: 'glass card col' });
   view.appendChild(devicesBox);
   refreshDevices(devicesBox);
@@ -2103,6 +2108,165 @@ const mailCard = guard(async (box) => {
     cfg.configured ? btn('Verbindung testen', '', guard(async () => { const r = await api('/mail/test', { method: 'POST' }); toast(`Verbunden · ${r.unseen} ungelesen`, 'ok'); })) : null,
     cfg.configured ? btn('Entfernen', 'danger', guard(async () => { if (!confirm('Postfach-Verbindung entfernen?')) return; await api('/mail', { method: 'DELETE' }); mailCard(box); })) : null)));
 });
+
+// ------------------------------------------------------------------ Benachrichtigungskanäle
+const CHANNELS = {
+  ntfy: { label: 'ntfy', fields: [['url', 'Server', 'https://ntfy.sh (leer = ntfy.sh)'], ['topic', 'Thema (Topic)', 'z. B. karims-todo-7f3a'], ['token', 'Zugangstoken (optional)', 'tk_…']], hint: 'App „ntfy“ installieren und dasselbe Thema abonnieren. Ein schwer erratbares Thema wählen.' },
+  gotify: { label: 'Gotify', fields: [['url', 'Server', 'https://gotify.example.com'], ['token', 'App-Token', 'A…']], hint: 'In Gotify unter „Apps“ eine App anlegen und deren Token eintragen.' },
+  telegram: { label: 'Telegram', fields: [['token', 'Bot-Token', '123456:ABC…'], ['chat_id', 'Chat-ID', 'z. B. 123456789']], hint: 'Bot bei @BotFather erstellen, dem Bot schreiben, Chat-ID z. B. über @userinfobot herausfinden.' },
+  matrix: { label: 'Matrix', fields: [['url', 'Homeserver', 'https://matrix.example.com'], ['token', 'Access-Token', 'syt_…'], ['room', 'Raum-ID', '!abc123:example.com']], hint: 'Am besten ein eigenes Bot-Konto, das in den Raum eingeladen ist.' },
+  email: { label: 'E-Mail', fields: [['to', 'Empfänger', 'du@example.com']], hint: 'Versand über den SMTP-Server des Servers.' },
+};
+const channelsCard = guard(async (box) => {
+  const { channels, email_available } = await api('/channels');
+  clear(box);
+  box.appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Weitere Kanäle'), btn('Kanal', 'sm', () => channelSheet(box, email_available), 'plus')));
+  box.appendChild(h('p', { class: 'muted small' }, 'Erinnerungen und Meldungen zusätzlich über ntfy, Gotify, Telegram, Matrix oder E-Mail – auf Wunsch nur dringende.'));
+  channels.forEach((c) => {
+    const sw = h('button', { class: 'switch' + (c.enabled ? ' on' : ''), role: 'switch', 'aria-checked': String(c.enabled), 'aria-label': 'Kanal aktiv',
+      onclick: guard(async () => { await api('/channels/' + c.id, { method: 'PATCH', body: { enabled: !c.enabled } }); channelsCard(box); }) });
+    box.appendChild(h('div', { class: 'row', style: 'align-items:flex-start' },
+      h('div', { class: 'grow' }, h('div', { class: 'row wrap', style: 'gap:6px' }, h('strong', {}, c.name || CHANNELS[c.kind].label), h('span', { class: 'chip' }, CHANNELS[c.kind].label),
+        c.urgent_only ? h('span', { class: 'chip' }, 'nur dringende') : null, c.last_error ? h('span', { class: 'chip dotted danger' }, 'Fehler') : c.last_sent_at ? h('span', { class: 'chip dotted ok' }, 'ok') : null),
+      h('div', { class: 'small muted', style: 'overflow-wrap:anywhere' }, c.target + (c.last_error ? ' · ' + c.last_error : c.last_sent_at ? ' · zuletzt ' + fmtTs(c.last_sent_at) : ''))),
+      btn('Test', 'sm', guard(async () => { await api(`/channels/${c.id}/test`, { method: 'POST' }); toast('Test gesendet', 'ok'); channelsCard(box); })),
+      h('button', { class: 'icon-btn', 'aria-label': c.urgent_only ? 'Alle Meldungen senden' : 'Nur dringende senden', title: c.urgent_only ? 'Alle Meldungen' : 'Nur dringende', onclick: guard(async () => { await api('/channels/' + c.id, { method: 'PATCH', body: { urgent_only: !c.urgent_only } }); channelsCard(box); }) }, icon('bolt')),
+      sw, h('button', { class: 'icon-btn', 'aria-label': 'Kanal löschen', onclick: guard(async () => { if (!confirm('Kanal löschen?')) return; await api('/channels/' + c.id, { method: 'DELETE' }); channelsCard(box); }) }, icon('trash'))));
+  });
+});
+function channelSheet(box, emailAvailable) {
+  let kind = 'ntfy';
+  const name = h('input', { type: 'text', maxlength: 40, placeholder: 'Name (optional), z. B. Handy' });
+  const urgent = h('input', { type: 'checkbox' });
+  const fieldsBox = h('div', { class: 'col' });
+  const inputs = {};
+  const seg = h('div', { class: 'seg', style: 'flex-wrap:wrap' });
+  const draw = () => {
+    clear(seg); Object.entries(CHANNELS).filter(([k]) => k !== 'email' || emailAvailable).forEach(([k, c]) => seg.appendChild(h('button', { type: 'button', class: kind === k ? 'on' : '', onclick: () => { kind = k; draw(); } }, c.label)));
+    clear(fieldsBox);
+    CHANNELS[kind].fields.forEach(([key, label, ph]) => { inputs[key] = h('input', { type: key === 'token' ? 'password' : 'text', placeholder: ph, autocomplete: 'off', maxlength: 500 }); fieldsBox.appendChild(h('label', { class: 'field' }, label, inputs[key])); });
+    fieldsBox.appendChild(h('p', { class: 'small muted' }, CHANNELS[kind].hint));
+  };
+  draw();
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    const body = { kind, name: name.value.trim(), urgent_only: urgent.checked };
+    CHANNELS[kind].fields.forEach(([key]) => { body[key] = inputs[key].value.trim(); });
+    const c = await api('/channels', { method: 'POST', body });
+    close(); channelsCard(box);
+    try { await api(`/channels/${c.id}/test`, { method: 'POST' }); toast('Kanal gespeichert – Testnachricht gesendet', 'ok'); } catch (ex) { toast('Gespeichert, aber Test fehlgeschlagen: ' + ex.message, 'err'); }
+    channelsCard(box);
+  }) }, h('h2', {}, 'Benachrichtigungskanal'), seg, fieldsBox, name, h('label', { class: 'row small muted' }, urgent, 'Nur dringende Meldungen (Priorität Hoch, als dringend markiert)'),
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, 'Speichern & testen'))));
+}
+
+// ------------------------------------------------------------------ API-Tokens, Home Assistant, MCP
+const integrationsCard = guard(async (box) => {
+  const { tokens } = await api('/tokens');
+  clear(box);
+  const o = location.origin;
+  box.appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Integrationen & API-Tokens'), btn('Token', 'sm', () => tokenSheet(box), 'key')));
+  box.appendChild(h('p', { class: 'muted small' }, 'Persönliche Tokens für Home Assistant, Skripte und KI-Agenten (MCP). Ein Token sieht nur deine Aufgaben und kann jederzeit widerrufen werden.'));
+  tokens.forEach((t) => box.appendChild(h('div', { class: 'row small' }, icon('key'), h('span', { class: 'grow' }, h('strong', {}, t.name), ` · ${t.prefix}… · ${t.scopes.map((x) => (x === 'read' ? 'lesen' : 'schreiben')).join(' & ')}`),
+    h('span', { class: 'muted' }, t.last_used_at ? 'zuletzt ' + fmtTs(t.last_used_at) : 'unbenutzt'),
+    h('button', { class: 'icon-btn', 'aria-label': 'Token widerrufen', onclick: guard(async () => { if (!confirm(`Token „${t.name}“ widerrufen?`)) return; await api('/tokens/' + t.id, { method: 'DELETE' }); integrationsCard(box); }) }, icon('trash')))));
+  box.appendChild(h('details', { class: 'small' }, h('summary', {}, 'Home Assistant'), h('div', { class: 'col', style: 'margin-top:10px;gap:8px' },
+    h('p', { class: 'muted' }, 'Sensoren (offen/heute/überfällig) und ein Befehl zum Anlegen – auch per Sprachassistent („Erinnere mich morgen 9 Uhr an den Müll“). In configuration.yaml:'),
+    h('pre', { class: 'code' }, `rest:
+  - resource: ${o}/api/v1/summary
+    headers: { Authorization: "Bearer tdk_…" }
+    scan_interval: 300
+    sensor:
+      - name: Todo offen
+        value_template: "{{ value_json.open }}"
+      - name: Todo heute
+        value_template: "{{ value_json.today }}"
+        json_attributes: [today_titles, next]
+      - name: Todo überfällig
+        value_template: "{{ value_json.overdue }}"
+
+rest_command:
+  todo_add:
+    url: ${o}/api/v1/quick
+    method: POST
+    headers: { Authorization: "Bearer tdk_…" }
+    content_type: application/json
+    payload: '{"text": {{ text | tojson }}}'
+
+intent_script:
+  TodoAdd:
+    action:
+      - action: rest_command.todo_add
+        data: { text: "{{ text }}" }
+    speech: { text: "Notiert: {{ text }}" }`),
+    h('p', { class: 'muted' }, 'Satz für Assist in custom_sentences/de/todo.yaml:'),
+    h('pre', { class: 'code' }, `language: de
+intents:
+  TodoAdd:
+    data:
+      - sentences:
+          - "erinnere mich [daran] {text}"
+          - "(schreib|setz) {text} auf [die] (todo|aufgaben)[liste]"
+lists:
+  text:
+    wildcard: true`))));
+  box.appendChild(h('details', { class: 'small' }, h('summary', {}, 'KI-Agenten (MCP: Claude & Co.)'), h('div', { class: 'col', style: 'margin-top:10px;gap:8px' },
+    h('p', { class: 'muted' }, 'Todo ist ein MCP-Server: Claude Code, Claude Desktop und andere Agenten können Aufgaben lesen, anlegen, ändern und abhaken. Werkzeuge: list_todos, create_todo, update_todo, complete_todo, list_lists.'),
+    h('pre', { class: 'code' }, `# Claude Code
+claude mcp add --transport http todo ${o}/api/mcp \\
+  --header "Authorization: Bearer tdk_…"
+
+# andere Clients (Streamable HTTP)
+URL:    ${o}/api/mcp
+Header: Authorization: Bearer tdk_…`),
+    h('p', { class: 'muted' }, 'Tipp: Für Agenten, die nur lesen sollen, ein Token nur mit „lesen“ anlegen. Änderungen erscheinen im Verlauf als „Name (Token)“.'))));
+  box.appendChild(h('details', { class: 'small' }, h('summary', {}, 'REST-API für Skripte'), h('pre', { class: 'code', style: 'margin-top:10px' }, `curl -H "Authorization: Bearer tdk_…" ${o}/api/v1/summary
+curl -H "Authorization: Bearer tdk_…" "${o}/api/v1/todos?due=today"
+curl -X POST -H "Authorization: Bearer tdk_…" -H "Content-Type: application/json" \\
+  -d '{"text":"morgen 9 Uhr Backup prüfen #server !!"}' ${o}/api/v1/quick
+curl -X POST -H "Authorization: Bearer tdk_…" ${o}/api/v1/todos/ID/done`)));
+});
+function tokenSheet(box) {
+  const name = h('input', { type: 'text', maxlength: 60, placeholder: 'z. B. Home Assistant, Claude', required: true });
+  const read = h('input', { type: 'checkbox', checked: true }), write = h('input', { type: 'checkbox', checked: true });
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    const scopes = [read.checked ? 'read' : null, write.checked ? 'write' : null].filter(Boolean);
+    if (!scopes.length) throw new Error('Mindestens ein Recht wählen.');
+    const t = await api('/tokens', { method: 'POST', body: { name: name.value.trim(), scopes } });
+    close(); keySheet(t.name, t.token); integrationsCard(box);
+  }) }, h('h2', {}, 'Neues API-Token'), h('label', { class: 'field' }, 'Name', name),
+  h('label', { class: 'row small' }, read, 'Lesen (Aufgaben, Listen, Zusammenfassung)'), h('label', { class: 'row small' }, write, 'Schreiben (anlegen, ändern, abhaken)'),
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, 'Erzeugen'))));
+  name.focus();
+}
+
+// ------------------------------------------------------------------ Import
+function importCard() {
+  const format = h('select', { 'aria-label': 'Format' }, [['auto', 'Automatisch erkennen'], ['todoist', 'Todoist (CSV-Export eines Projekts)'], ['google', 'Google Tasks (Takeout: Tasks.json)'],
+    ['csv', 'CSV/Excel – auch Microsoft To Do & Outlook'], ['todo', 'Todo-Export (JSON)']].map(([v, l]) => h('option', { value: v }, l)));
+  const listName = h('input', { type: 'text', maxlength: 60, placeholder: 'Liste für den Import (Todoist), z. B. Projektname' });
+  const file = h('input', { type: 'file', accept: '.csv,.json,.txt,text/csv,application/json', class: 'hidden' });
+  const status = h('div', { class: 'small muted' });
+  file.addEventListener('change', guard(async () => {
+    const f = file.files[0]; file.value = ''; if (!f) return;
+    if (f.size > 10 * 1024 * 1024) throw new Error('Datei ist größer als 10 MB.');
+    status.textContent = 'Importiere …';
+    const q = new URLSearchParams({ format: format.value }); if (listName.value.trim()) q.set('list_name', listName.value.trim());
+    const res = await fetch('/api/import?' + q, { method: 'POST', credentials: 'same-origin', body: f, headers: { 'X-CSRF-Token': state.csrf, 'Content-Type': 'application/octet-stream' } });
+    let r = null; try { r = await res.json(); } catch (_) { /* */ }
+    if (!res.ok) { status.textContent = ''; throw new Error((r && r.detail) || 'Import fehlgeschlagen.'); }
+    status.textContent = `${r.created} Aufgaben` + (r.subtasks ? ` + ${r.subtasks} Unteraufgaben` : '') + ' importiert' + (r.lists_created.length ? ` · neue Listen: ${r.lists_created.join(', ')}` : '') + (r.skipped ? ` · ${r.skipped} übersprungen` : '');
+    const [t, l] = await Promise.all([api('/todos'), api('/lists')]); state.todos = t.todos; state.lists = l.lists; renderChrome();
+    toast(status.textContent, 'ok', r.ids.length ? { label: 'Rückgängig', fn: guard(async () => {
+      for (let i = 0; i < r.ids.length; i += 500) await api('/todos/bulk', { method: 'POST', body: { ids: r.ids.slice(i, i + 500), action: 'delete' } });
+      state.todos = (await api('/todos')).todos; renderChrome(); status.textContent = 'Import rückgängig gemacht (im Papierkorb).';
+    }) } : null);
+  }));
+  return h('div', { class: 'glass card col' }, h('h3', {}, 'Import'),
+    h('p', { class: 'muted small' }, 'Aufgaben aus Todoist, Google Tasks, Microsoft To Do/Outlook (als CSV) oder einer Tabelle übernehmen. Listen werden nach Namen zugeordnet oder angelegt.'),
+    h('div', { class: 'search-grid' }, format, listName), h('div', { class: 'row wrap' }, btn('Datei wählen …', '', () => file.click(), 'plus'), status, file));
+}
 
 function applyTheme() {
   const t = localStorage.getItem('theme') || 'auto';

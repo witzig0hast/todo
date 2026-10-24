@@ -287,6 +287,28 @@ CREATE TABLE IF NOT EXISTS todo_embeddings (
   hash TEXT NOT NULL,             -- Prüfsumme des eingebetteten Textes (ändert sich der Text -> neu berechnen)
   vec BLOB NOT NULL               -- float32, normiert
 );
+CREATE TABLE IF NOT EXISTS api_tokens (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  token_hash TEXT NOT NULL UNIQUE,
+  prefix TEXT NOT NULL,
+  scopes TEXT NOT NULL,           -- "read" | "write" | "read,write"
+  created_at TEXT NOT NULL,
+  last_used_at TEXT
+);
+CREATE TABLE IF NOT EXISTS notify_channels (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  name TEXT NOT NULL DEFAULT '',
+  config_enc TEXT NOT NULL,       -- verschlüsseltes JSON (Tokens, Adressen)
+  enabled INTEGER NOT NULL DEFAULT 1,
+  urgent_only INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  last_sent_at TEXT,
+  last_error TEXT
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
