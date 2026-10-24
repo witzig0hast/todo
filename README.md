@@ -37,6 +37,11 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
   Unteraufgaben vorschlagen, Tagesplan, Chat-Assistent. Der Assistent kann **Aktionen vorschlagen** (anlegen, erledigen,
   verschieben, ...), ausgeführt wird erst nach deiner Bestätigung. **Morgen-Zusammenfassung** als Benachrichtigung zur
   gewünschten Uhrzeit. Das Modell ist pro Benutzer wählbar.
+- **Mehr KI:** **Foto → Aufgaben** (Zettel, Brief, Rechnung fotografieren; ein Vision-Modell wie `qwen2.5vl:7b` erkennt Fristen
+  und Beträge, das Foto wird auf Wunsch angehängt), **Woche planen** (verteilt offene Aufgaben auf die nächsten 7 Tage – als
+  Vorschlag), **Suche nach Bedeutung** („Auto“ findet „TÜV-Termin“, über Embeddings, Standard `bge-m3`), **Duplikat-Hinweis**
+  beim Anlegen plus Duplikat-Übersicht im Assistenten, **Tags & Liste vorschlagen** in den Details. Modelle in den Einstellungen
+  wählbar; einmalig laden: `ollama pull qwen2.5vl:7b` und `ollama pull bge-m3`.
 - **Whisper:** Mikrofon-Button → Aufnahme wird im Browser in 16-kHz-WAV umgewandelt, das Backend spricht per
   Wyoming-Protokoll mit deinem `wyoming-whisper` (Port 10300) → Text → KI-Vorschlag. Funktioniert auch für **Sprachbefehle**
   („erledige Zahnarzt“) und Diktat mehrerer Aufgaben. Audio wird nie gespeichert.

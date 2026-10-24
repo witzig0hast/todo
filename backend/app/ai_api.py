@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from . import config, ollama, wyoming
 from .db import get_db
 from .security import Auth, enforce_rate, get_auth
-from .recurrence import valid_tz
+from .recurrence import valid_tz, zone
 from .todos import list_todos
 
 router = APIRouter(prefix="/api", tags=["ai"])
@@ -43,6 +43,8 @@ class ChatIn(Ctx):
 
 class SettingsIn(BaseModel):
     ollama_model: str | None = Field(default=None, max_length=100)
+    vision_model: str | None = Field(default=None, max_length=100)
+    embed_model: str | None = Field(default=None, max_length=100)
     tz: str | None = Field(default=None, max_length=64)
 
 
@@ -58,19 +60,31 @@ async def _ai(coro):
         raise HTTPException(502, str(exc)) from exc
 
 
-def _local_to_utc(value: object, tz_offset: int) -> str | None:
+def user_zone(conn: sqlite3.Connection, user_id: int):
+    """Gespeicherte Zeitzone des Nutzers (vom Browser gemeldet) oder None."""
+    row = conn.execute("SELECT tz FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
+    return zone(row["tz"]) if row and row["tz"] and valid_tz(row["tz"]) else None
+
+
+def _local_to_utc(value: object, tz_offset: int, tz=None) -> str | None:
+    """Lokale Zeit (KI-Antwort) -> UTC. Mit Zeitzone korrekt auch über die Sommer-/Winterzeit hinweg;
+    der Browser-Offset gilt nur für „jetzt“ und ist nur die Rückfallebene."""
     if not isinstance(value, str) or not value:
         return None
     try:
         dt = datetime.fromisoformat(value.replace("Z", ""))
     except ValueError:
         return None
-    return (dt + timedelta(minutes=tz_offset)).replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if tz is not None:
+        return dt.replace(tzinfo=None, fold=0).replace(tzinfo=tz).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return (dt.replace(tzinfo=None) + timedelta(minutes=tz_offset)).replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _settings(conn: sqlite3.Connection, user_id: int) -> dict:
     row = conn.execute("SELECT * FROM user_settings WHERE user_id = ?", (user_id,)).fetchone()
     return {"ollama_model": _model(conn, user_id), "default_model": config.OLLAMA_MODEL,
+            "vision_model": (row["vision_model"] if row and row["vision_model"] else config.OLLAMA_VISION_MODEL),
+            "embed_model": (row["embed_model"] if row and row["embed_model"] else config.OLLAMA_EMBED_MODEL),
             "tz": (row["tz"] if row else None), "summary_time": (row["summary_time"] if row else None)}
 
 
@@ -85,7 +99,7 @@ def put_settings(data: SettingsIn, auth: Auth = Depends(get_auth), conn: sqlite3
     if "tz" in patch and patch["tz"] and not valid_tz(patch["tz"]):
         raise HTTPException(422, "Unbekannte Zeitzone.")
     conn.execute("INSERT OR IGNORE INTO user_settings (user_id) VALUES (?)", (auth.id,))
-    for key in ("ollama_model", "tz"):
+    for key in ("ollama_model", "vision_model", "embed_model", "tz"):
         if key in patch:
             conn.execute(f"UPDATE user_settings SET {key} = ? WHERE user_id = ?", (patch[key] or None, auth.id))
     return _settings(conn, auth.id)
@@ -121,7 +135,7 @@ async def parse(data: ParseIn, auth: Auth = Depends(get_auth), conn: sqlite3.Con
     except (TypeError, ValueError):
         priority = 0
     return {"title": title, "notes": str(out.get("notes") or "")[:5000], "priority": priority,
-            "due_at": _local_to_utc(out.get("due_at"), data.tz_offset)}
+            "due_at": _local_to_utc(out.get("due_at"), data.tz_offset, user_zone(conn, auth.id))}
 
 
 @router.post("/ai/breakdown")

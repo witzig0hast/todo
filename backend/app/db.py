@@ -281,6 +281,12 @@ CREATE TABLE IF NOT EXISTS invites (
   expires_at TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS todo_embeddings (
+  todo_id INTEGER PRIMARY KEY REFERENCES todos(id) ON DELETE CASCADE,
+  model TEXT NOT NULL,
+  hash TEXT NOT NULL,             -- Prüfsumme des eingebetteten Textes (ändert sich der Text -> neu berechnen)
+  vec BLOB NOT NULL               -- float32, normiert
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -328,6 +334,9 @@ COLUMNS = [
     ("todos", "assignee_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
     ("lists", "kind", "TEXT NOT NULL DEFAULT 'list'"),          # list | project
     ("lists", "due_at", "TEXT"),                                # Projekt-Termin
+    ("user_settings", "vision_model", "TEXT"),
+    ("user_settings", "embed_model", "TEXT"),
+    ("user_settings", "semantic_used", "INTEGER NOT NULL DEFAULT 0"),  # Hintergrund-Indexierung nur, wenn genutzt
 ]
 
 

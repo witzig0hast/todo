@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
 from . import ollama
-from .ai_api import SYSTEM_GUARD, Ctx, _ai, _local_to_utc, _model
+from .ai_api import SYSTEM_GUARD, Ctx, _ai, _local_to_utc, _model, user_zone
 from .db import get_db, now, session
 from .recurrence import user_tz
 from .security import Auth, enforce_rate, get_auth
@@ -53,6 +53,7 @@ def normalize_actions(conn: sqlite3.Connection, user_id: int, raw: object, tz_of
     if not isinstance(raw, list):
         return []
     open_todos = {t["id"]: t for t in list_todos(conn, user_id, done=False, limit=500)}
+    tz = user_zone(conn, user_id)
     agents = {r["name"].lower(): r["name"] for r in conn.execute("SELECT name FROM agents WHERE user_id = ?", (user_id,))}
     out: list[dict] = []
     for a in raw[:MAX_ACTIONS * 2]:
@@ -70,7 +71,7 @@ def normalize_actions(conn: sqlite3.Connection, user_id: int, raw: object, tz_of
                     tags = []
                 out.append({"type": "create", "title": title, "notes": str(a.get("notes") or "")[:5000],
                             "priority": max(0, min(3, int(a.get("priority") or 0))),
-                            "due_at": _local_to_utc(a.get("due_at"), tz_offset), "tags": tags,
+                            "due_at": _local_to_utc(a.get("due_at"), tz_offset, tz), "tags": tags,
                             "label": f"Neue Aufgabe: {title}"})
             elif kind in ("complete", "reschedule", "snooze"):
                 tid = int(a.get("todo_id"))
@@ -80,7 +81,7 @@ def normalize_actions(conn: sqlite3.Connection, user_id: int, raw: object, tz_of
                 if kind == "complete":
                     out.append({"type": "complete", "todo_id": tid, "label": f"Erledigt: {title}"})
                 elif kind == "reschedule":
-                    due = _local_to_utc(a.get("due_at"), tz_offset)
+                    due = _local_to_utc(a.get("due_at"), tz_offset, tz)
                     if not due:
                         continue
                     out.append({"type": "reschedule", "todo_id": tid, "due_at": due, "label": f"Verschieben: {title}"})

@@ -47,3 +47,25 @@ async def chat_json(model: str, messages: list[dict]) -> dict:
     if not isinstance(parsed, dict):
         raise OllamaError("Ollama lieferte kein gültiges JSON.")
     return parsed
+
+
+async def embed(model: str, inputs: list[str]) -> list[list[float]]:
+    data = await _post("/api/embed", {"model": model, "input": inputs})
+    vecs = data.get("embeddings")
+    if not isinstance(vecs, list) or len(vecs) != len(inputs):
+        raise OllamaError("Ollama lieferte keine Embeddings (Modell installiert? z. B. ollama pull bge-m3).")
+    return vecs
+
+
+def embed_sync(model: str, inputs: list[str]) -> list[list[float]]:
+    """Für Hintergrund-Jobs (Thread, kein Event-Loop)."""
+    try:
+        with httpx.Client(timeout=config.OLLAMA_TIMEOUT) as client:
+            r = client.post(config.OLLAMA_URL + "/api/embed", json={"model": model, "input": inputs})
+            r.raise_for_status()
+            vecs = r.json().get("embeddings")
+    except (httpx.HTTPError, ValueError) as exc:
+        raise OllamaError("Ollama nicht erreichbar.") from exc
+    if not isinstance(vecs, list) or len(vecs) != len(inputs):
+        raise OllamaError("Ollama lieferte keine Embeddings.")
+    return vecs

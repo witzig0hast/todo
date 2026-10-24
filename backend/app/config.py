@@ -17,6 +17,8 @@ SESSION_DAYS = int(os.getenv("SESSION_DAYS", "14"))
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://host.docker.internal:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3.1:8b")
 OLLAMA_TIMEOUT = float(os.getenv("OLLAMA_TIMEOUT", "180"))
+OLLAMA_VISION_MODEL = os.getenv("OLLAMA_VISION_MODEL", "qwen2.5vl:7b")   # Foto -> Aufgabe
+OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "bge-m3")           # semantische Suche (mehrsprachig)
 
 WHISPER_HOST = os.getenv("WHISPER_HOST", "host.docker.internal")
 WHISPER_PORT = int(os.getenv("WHISPER_PORT", "10300"))

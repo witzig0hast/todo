@@ -29,7 +29,8 @@ const ICONS = {
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>', select: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12l3 3 5-6"/>',
   layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>', board: '<rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="10" rx="1.5"/><rect x="17" y="4" width="4" height="13" rx="1.5"/>',
   comment: '<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1-4.6A8 8 0 1121 12z"/>', folder: '<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>',
-  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>', timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>', camera: '<path d="M4 8h3l2-3h6l2 3h3a1 1 0 011 1v9a1 1 0 01-1 1H4a1 1 0 01-1-1V9a1 1 0 011-1z"/><circle cx="12" cy="13" r="3.5"/>',
+  copy2: '<rect x="8" y="8" width="12" height="12" rx="2"/><rect x="4" y="4" width="12" height="12" rx="2"/>', timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
 };
 function icon(name, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -541,6 +542,7 @@ function viewTasks(view) {
       if (x.count) undoToast(`${x.count} erledigte Aufgabe${x.count === 1 ? '' : 'n'} im Papierkorb`, x.trash_id);
     }), 'trash') : null));
   addHeadTools(view);
+  if (r === 'upcoming') view.querySelector('.page-head .row').prepend(h('button', { class: 'icon-btn', 'aria-label': 'Woche mit KI planen', title: 'Woche mit KI planen', onclick: () => weekPlan($('#draft')) }, icon('spark')));
   if (list && list.kind === 'project') view.appendChild(projectBar(list));
   if (r !== 'done') view.appendChild(quickBar());
   view.appendChild(h('div', { id: 'draft' }));
@@ -678,10 +680,14 @@ function viewSearch(view) {
     }), 'filter')));
   view.appendChild(h('div', { class: 'glass card col' }, h('div', { class: 'quick', style: 'padding:0;border:0' }, icon('search'), input),
     h('div', { class: 'search-grid' }, due, prio, list), allTags.length ? tagBox : null,
-    h('label', { class: 'row small muted' }, done, 'Erledigte einbeziehen')));
+    h('div', { class: 'row wrap' }, h('label', { class: 'row small muted grow' }, done, 'Erledigte einbeziehen'),
+      btn('Nach Bedeutung suchen (KI)', 'sm', () => { const q = input.value.trim(); if (q.length < 2) { toast('Bitte zuerst einen Suchbegriff eingeben.'); return; } semanticResults(q, semBox); }, 'spark'))));
+  const semBox = h('div', { class: 'col', style: 'gap:8px' });
+  input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && input.value.trim().length >= 2 && !filteredTodos().length) semanticResults(input.value.trim(), semBox); });
   view.appendChild(h('div', { id: 'draft' }));
   view.appendChild(h('div', { id: 'progress' }));
   view.appendChild(h('div', { class: 'todo-list', id: 'todos' }));
+  view.appendChild(semBox);
   renderTodos();
   setTimeout(() => input.focus(), 30);
 }
@@ -717,9 +723,11 @@ function quickBar() {
     if (!state.todos.some((x) => x.id === t.id)) state.todos.push(t);
     input.value = ''; raw = false; seq++; drawPreview(null); renderTodos(); renderChrome();
     if (!filteredTodos().some((x) => x.id === t.id)) toast(`„${t.title}“ gespeichert` + (t.due_at ? ' – ' + fmtDue(t.due_at) : ''), 'ok');
+    checkDuplicate(t);
   }) },
   input,
   h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Mit KI auswerten', title: 'Mit KI auswerten', onclick: () => aiDraft(input.value.trim(), input) }, icon('spark')),
+  h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Foto zu Aufgaben', title: 'Foto → Aufgaben (KI)', onclick: () => photoPick() }, icon('camera')),
   h('button', { class: 'icon-btn mic', type: 'button', id: 'mic', 'aria-label': 'Spracheingabe', title: 'Spracheingabe', onclick: () => toggleRecord(input, bar) }, icon('mic')),
   h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Hinzufügen' }, icon('plus')));
   return h('div', { class: 'col', style: 'gap:6px' }, bar, preview);
@@ -744,9 +752,89 @@ const aiDraft = guard(async (text, input) => {
   clear(slot).appendChild(actionPanel(acts, r.reply, () => { if (input) input.value = ''; }));
 });
 
+// ------------------------------------------------------------------ KI-Werkzeuge: Foto, Woche, Duplikate, Vorschläge
+function photoPick() {
+  const file = h('input', { type: 'file', accept: 'image/*', capture: 'environment', class: 'hidden' });
+  file.addEventListener('change', () => { if (file.files[0]) photoToTasks(file.files[0]); file.remove(); });
+  document.body.appendChild(file); file.click();
+}
+const photoToTasks = guard(async (f) => {
+  if (f.size > 10 * 1024 * 1024) throw new Error('Foto ist größer als 10 MB.');
+  const slot = $('#draft') ? clear($('#draft')) : null;
+  if (slot) slot.appendChild(h('div', { class: 'glass card row' }, h('div', { class: 'spinner' }), h('span', { class: 'muted' }, 'KI liest das Foto … (kann bei großen Modellen etwas dauern)')));
+  const ctx = aiCtx();
+  const res = await fetch(`/api/ai/photo?now_local=${encodeURIComponent(ctx.now_local)}&tz_offset=${ctx.tz_offset}`, { method: 'POST', credentials: 'same-origin', body: f,
+    headers: { 'X-CSRF-Token': state.csrf, 'Content-Type': 'application/octet-stream' } });
+  let r = null; try { r = await res.json(); } catch (_) { /* */ }
+  if (slot) clear(slot);
+  if (!res.ok) throw new Error((r && r.detail) || 'Foto konnte nicht ausgewertet werden.');
+  if (!r.actions.length) { toast(r.reply ? r.reply + ' – keine Aufgaben erkannt.' : 'Keine Aufgaben erkannt.'); return; }
+  const panel = actionPanel(r.actions, r.reply || 'Aus dem Foto erkannt – bitte prüfen', null, f);
+  if (slot) slot.appendChild(panel); else sheet(panel);
+});
+const weekPlan = guard(async (slot) => {
+  clear(slot).appendChild(h('div', { class: 'glass card row' }, h('div', { class: 'spinner' }), h('span', { class: 'muted' }, 'KI plant deine Woche …')));
+  let r;
+  try { r = await api('/ai/weekplan', { method: 'POST', body: aiCtx() }); } catch (e) { clear(slot); throw e; }
+  clear(slot);
+  if (!r.actions.length) { toast(r.reply || 'Keine Änderungen nötig.'); return; }
+  slot.appendChild(actionPanel(r.actions, r.reply || 'Vorschlag für deine Woche', () => clear(slot)));
+});
+async function checkDuplicate(t) {
+  try {
+    const { duplicates } = await api('/ai/duplicates', { method: 'POST', body: { title: t.title, exclude_id: t.id } });
+    if (duplicates.length) {
+      const d = duplicates[0];
+      toast(`Ähnlich: „${d.title}“ gibt es schon`, '', { label: 'Neue löschen', fn: () => deleteTodo(byId(t.id) || t) });
+    }
+  } catch (_) { /* Hinweis ist optional */ }
+}
+const duplicateSheet = guard(async () => {
+  const { pairs } = await api('/ai/duplicates/all');
+  const list = h('div', { class: 'col', style: 'gap:8px' });
+  const close = sheet(h('div', { class: 'col' }, h('h2', {}, 'Mögliche Duplikate'),
+    h('p', { class: 'muted small' }, 'Offene Aufgaben mit (fast) gleichem Titel. Gelöschte landen im Papierkorb.'), list));
+  if (!pairs.length) list.appendChild(h('div', { class: 'muted small' }, 'Keine Duplikate gefunden.'));
+  pairs.forEach((p) => {
+    const row = h('div', { class: 'glass card col', style: 'gap:6px;padding:12px' });
+    [p.a, p.b].forEach((x) => row.appendChild(h('div', { class: 'row small' }, icon('copy2'), h('button', { type: 'button', class: 'grow link-btn', style: 'text-align:left;font-size:.875rem', onclick: () => { close(); if (!isTaskRoute(state.route)) go('all'); setTimeout(() => select(x.id), 60); } }, x.title),
+      h('span', { class: 'muted' }, fmtTs(x.created_at)), btn('Löschen', 'sm danger', async () => { const t = byId(x.id); if (t) { await deleteTodo(t); row.remove(); } }))));
+    list.appendChild(row);
+  });
+  void close;
+});
+async function semanticResults(q, box) {
+  clear(box).appendChild(h('div', { class: 'row muted small' }, h('div', { class: 'spinner' }), 'Suche nach Bedeutung …'));
+  try {
+    const r = await api('/ai/search?q=' + encodeURIComponent(q));
+    clear(box);
+    const items = r.results.map((x) => ({ ...x, t: byId(x.id) })).filter((x) => x.t && !x.t.parent_id);
+    box.appendChild(h('div', { class: 'group-title' }, 'Inhaltlich passend (KI)' + (r.pending ? ` · Index wird noch aufgebaut (${r.pending} offen)` : '')));
+    if (!items.length) { box.appendChild(h('div', { class: 'muted small' }, 'Nichts Passendes gefunden.')); return; }
+    const rows = h('div', { class: 'rows glass' });
+    items.forEach((x) => rows.appendChild(todoRow(x.t)));
+    box.appendChild(rows);
+  } catch (e) { clear(box).appendChild(h('div', { class: 'small error' }, e.message)); }
+}
+function suggestBox(t, save) {
+  const box = h('div', { class: 'row wrap', style: 'gap:6px' });
+  const run = guard(async () => {
+    clear(box).appendChild(h('div', { class: 'spinner' }));
+    const r = await api('/ai/suggest', { method: 'POST', body: { todo_id: t.id } });
+    clear(box);
+    const list = r.list_id ? state.lists.find((l) => l.id === r.list_id) : null;
+    if (!r.tags.length && !list) { box.appendChild(h('span', { class: 'small muted' }, 'Kein Vorschlag – passt schon.')); return; }
+    r.tags.forEach((g) => box.appendChild(h('button', { type: 'button', class: 'chip tag', onclick: async () => { await save({ tags: [...(t.tags || []), g] }); renderDetail(); } }, '+ #' + g)));
+    if (list) box.appendChild(h('button', { type: 'button', class: 'chip tag', onclick: async () => { await save({ list_id: list.id }); renderDetail(); } }, '→ ' + list.name));
+    box.appendChild(btn('Alle übernehmen', 'sm', async () => { await save({ tags: [...new Set([...(t.tags || []), ...r.tags])], ...(list ? { list_id: list.id } : {}) }); renderDetail(); }));
+  });
+  box.appendChild(h('button', { type: 'button', class: 'link-btn', onclick: run }, 'KI: Tags & Liste vorschlagen'));
+  return box;
+}
+
 // ------------------------------------------------------------------ KI-Aktionen (immer erst nach Bestätigung)
 async function executeAction(a) {
-  if (a.type === 'create') await api('/todos', { method: 'POST', body: { title: a.title, notes: a.notes || '', priority: a.priority || 0, due_at: a.due_at || null, tags: a.tags || [], list_id: currentListId() } });
+  if (a.type === 'create') return api('/todos', { method: 'POST', body: { title: a.title, notes: a.notes || '', priority: a.priority || 0, due_at: a.due_at || null, tags: a.tags || [], list_id: currentListId() } });
   else if (a.type === 'complete') await api('/todos/' + a.todo_id, { method: 'PATCH', body: { done: true } });
   else if (a.type === 'reschedule') await api('/todos/' + a.todo_id, { method: 'PATCH', body: { due_at: a.due_at } });
   else if (a.type === 'snooze') await api(`/todos/${a.todo_id}/snooze`, { method: 'POST', body: { minutes: a.minutes } });
@@ -756,14 +844,15 @@ function actionDetail(a) {
   return [a.due_at ? fmtDue(a.due_at) : null, a.priority ? ['', 'Niedrig', 'Mittel', 'Hoch'][a.priority] : null,
     (a.tags || []).map((g) => '#' + g).join(' ') || null, a.type === 'message_agent' ? `„${a.content}“` : null].filter(Boolean).join(' · ');
 }
-function actionPanel(actions, reply, onDone) {
+function actionPanel(actions, reply, onDone, attachFile) {
   const box = h('div', { class: 'glass card col', style: 'gap:10px' });
   const chosen = new Set(actions.map((_, i) => i));
   const runBtn = btn('Ausgewählte ausführen', 'sm primary', guard(async () => {
     runBtn.disabled = true;
-    let n = 0;
-    try { for (const i of [...chosen].sort()) { await executeAction(actions[i]); n++; } }
+    let n = 0, firstCreated = null;
+    try { for (const i of [...chosen].sort()) { const r = await executeAction(actions[i]); if (r && r.id && !firstCreated) firstCreated = r; n++; } }
     finally {
+      if (attachFile && firstCreated) await uploadFiles(firstCreated.id, [attachFile]).catch(() => {});
       state.todos = (await api('/todos')).todos; renderTodos(); renderChrome();
       toast(`${n} Aktion${n === 1 ? '' : 'en'} ausgeführt`, 'ok'); box.remove(); if (onDone) onDone();
     }
@@ -773,7 +862,8 @@ function actionPanel(actions, reply, onDone) {
     const cb = h('input', { type: 'checkbox', checked: true, onchange: () => { if (cb.checked) chosen.add(i); else chosen.delete(i); runBtn.disabled = !chosen.size; } });
     box.appendChild(h('label', { class: 'row', style: 'align-items:flex-start' }, cb, h('div', { class: 'grow' }, h('div', {}, a.label), actionDetail(a) ? h('div', { class: 'small muted' }, actionDetail(a)) : null)));
   });
-  box.appendChild(h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Verwerfen', 'sm', () => box.remove()), runBtn));
+  const attach = attachFile ? h('label', { class: 'row small muted' }, h('input', { type: 'checkbox', checked: true, onchange: (e) => { if (!e.target.checked) attachFile = null; } }), 'Foto an die erste neue Aufgabe anhängen') : null;
+  box.appendChild(h('div', { class: 'row wrap' }, attach, h('div', { class: 'grow' }), btn('Verwerfen', 'sm', () => box.remove()), runBtn));
   return box;
 }
 
@@ -1053,7 +1143,7 @@ function detailBody(t) {
     h('label', { class: 'field' }, 'Fällig', due), h('label', { class: 'field' }, 'Liste', sel),
     h('div', { class: 'field' }, 'Priorität', prioSeg(t.priority, (p) => save({ priority: p }))),
     collab.top,
-    h('label', { class: 'field' }, 'Tags', tagsIn),
+    h('div', { class: 'field' }, h('label', { class: 'col', style: 'gap:6px' }, 'Tags', tagsIn), suggestBox(t, save)),
     h('div', { class: 'field' }, 'Wiederholung', freq, recExtra),
     h('div', { class: 'field' }, 'Erinnerungen' + (t.due_at ? '' : ' (wirken erst mit Fälligkeit)'), remBox),
     h('div', { class: 'field' }, 'Anhänge', attBox),
@@ -1738,7 +1828,10 @@ function viewAssistant(view) {
     try { const r = await fn(); state.chat.push({ role: 'assistant', content: r.reply || '…', actions: r.actions || [] }); } finally { draw(); }
   });
   view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Assistent'), h('div', { class: 'muted small' }, 'Modell: ' + state.settings.ollama_model)),
-    btn('Tagesplan', 'sm', () => ask(() => api('/ai/plan', { method: 'POST', body: aiCtx() }), 'Erstelle meinen Tagesplan.'), 'spark')));
+    h('div', { class: 'row wrap', style: 'gap:6px;justify-content:flex-end' },
+      btn('Tagesplan', 'sm', () => ask(() => api('/ai/plan', { method: 'POST', body: aiCtx() }), 'Erstelle meinen Tagesplan.'), 'spark'),
+      btn('Woche planen', 'sm', () => ask(() => api('/ai/weekplan', { method: 'POST', body: aiCtx() }), 'Plane meine Woche.'), 'cal'),
+      btn('Duplikate', 'sm', duplicateSheet, 'copy2'))));
   view.appendChild(log);
   view.appendChild(h('form', { class: 'quick glass', style: 'position:sticky;bottom:0', onsubmit: (e) => { e.preventDefault(); const v = input.value.trim(); if (!v) return; input.value = ''; state.chat = state.chat.slice(-18); ask(() => api('/ai/chat', { method: 'POST', body: { ...aiCtx(), messages: state.chat.map(({ role, content }) => ({ role, content })) } }), v); } },
     input, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Senden' }, icon('send'))));
@@ -1762,7 +1855,15 @@ function viewSettings(view) {
   const modelHint = h('div', { class: 'small muted hidden' }, 'Ollama ist gerade nicht erreichbar – die Modellliste fehlt, KI-Funktionen melden sich mit einem Fehler.');
   api('/ai/models').then(({ models }) => { clear(model); const all = new Set([state.settings.ollama_model, ...models]); all.forEach((m) => model.appendChild(h('option', { value: m, selected: m === state.settings.ollama_model }, m))); }).catch(() => modelHint.classList.remove('hidden'));
   model.addEventListener('change', guard(async () => { state.settings = { ...state.settings, ...(await api('/settings', { method: 'PUT', body: { ollama_model: model.value } })) }; toast('Modell gespeichert', 'ok'); }));
-  view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model, modelHint));
+  const extra = (key, label, hint) => {
+    const sel = h('select', { 'aria-label': label }, h('option', { value: state.settings[key] }, state.settings[key]));
+    api('/ai/models').then(({ models }) => { clear(sel); new Set([state.settings[key], ...models]).forEach((m) => sel.appendChild(h('option', { value: m, selected: m === state.settings[key] }, m))); }).catch(() => {});
+    sel.addEventListener('change', guard(async () => { state.settings = { ...state.settings, ...(await api('/settings', { method: 'PUT', body: { [key]: sel.value } })) }; toast(label + ' gespeichert', 'ok'); }));
+    return h('label', { class: 'field' }, label, sel, h('span', { class: 'small muted', style: 'font-weight:400' }, hint));
+  };
+  view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modelle (Ollama)'), h('label', { class: 'field' }, 'Text & Assistent', model), modelHint,
+    extra('vision_model', 'Bild-Modell (Foto → Aufgaben)', 'Ein Vision-Modell, z. B. qwen2.5vl:7b, llama3.2-vision oder llava.'),
+    extra('embed_model', 'Embedding-Modell (Suche nach Bedeutung)', 'Mehrsprachig empfohlen: bge-m3. Nach einem Wechsel wird der Suchindex neu aufgebaut.')));
   // Push
   view.appendChild(pushCard());
   const secBox = h('div', { class: 'glass card col' });
