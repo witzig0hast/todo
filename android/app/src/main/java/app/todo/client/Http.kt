@@ -28,6 +28,34 @@ object Http {
         }
     }
 
+    /** POST mit JSON-Körper, gibt (HTTP-Status, Antworttext) zurück; Status 0 = keine Verbindung. */
+    fun postJsonResult(url: String, body: JSONObject, bearer: String?): Pair<Int, String?> {
+        val builder = Request.Builder().url(url).post(body.toString().toRequestBody(JSON_TYPE))
+        if (bearer != null) builder.header("Authorization", "Bearer $bearer")
+        return try {
+            client.newCall(builder.build()).execute().use { it.code to it.body?.string() }
+        } catch (e: IOException) {
+            0 to null
+        }
+    }
+
+    /** Lädt eine Datei herunter (z. B. App-Update). Gibt true bei Erfolg zurück. */
+    fun download(url: String, bearer: String?, target: java.io.File): Boolean {
+        val builder = Request.Builder().url(url).get()
+        if (bearer != null) builder.header("Authorization", "Bearer $bearer")
+        return try {
+            client.newBuilder().readTimeout(120, TimeUnit.SECONDS).build().newCall(builder.build()).execute().use { r ->
+                val body = r.body
+                if (!r.isSuccessful || body == null) return false
+                target.parentFile?.mkdirs()
+                target.outputStream().use { out -> body.byteStream().copyTo(out) }
+                true
+            }
+        } catch (e: IOException) {
+            false
+        }
+    }
+
     /** GET, gibt den Text bei 2xx zurück, sonst null. Bei 401 wird [onUnauthorized] aufgerufen. */
     fun get(url: String, bearer: String?, onUnauthorized: () -> Unit = {}): String? {
         val builder = Request.Builder().url(url).get()

@@ -10,4 +10,11 @@
     <string name="setup_hint">Adresse deiner Todo-Installation, z. B. https://todo.example.com</string>
     <string name="setup_connect">Verbinden</string>
     <string name="setup_invalid">Bitte eine gültige https-Adresse eingeben.</string>
+    <string name="quick_add">Neue Aufgabe</string>
+    <string name="widget_label">Todo – Heute</string>
+    <string name="widget_desc">Heute fällige Aufgaben abhaken und neue anlegen</string>
+    <string name="sc_new">Neue Aufgabe</string>
+    <string name="sc_dictate">Diktieren</string>
+    <string name="sc_today">Heute</string>
+    <string name="sc_search">Suchen</string>
 </resources>

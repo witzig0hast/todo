@@ -8,4 +8,11 @@
         <item name="colorPrimaryDark">@color/bg</item>
         <item name="colorAccent">@color/fg</item>
     </style>
+    <style name="Theme.Todo.Dialog" parent="Theme.AppCompat.Dialog">
+        <item name="android:windowBackground">@drawable/dialog_bg</item>
+        <item name="colorAccent">@color/fg</item>
+        <item name="android:windowMinWidthMajor">90%</item>
+        <item name="android:windowMinWidthMinor">90%</item>
+        <item name="windowNoTitle">false</item>
+    </style>
 </resources>

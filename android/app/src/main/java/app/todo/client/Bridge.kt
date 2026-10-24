@@ -38,6 +38,8 @@ class Bridge(private val activity: MainActivity, private val prefs: Prefs) : Web
             )
             "setAppLock" -> activity.setAppLock(json.optBoolean("enabled", false))
             "enableLocation" -> activity.requestLocationForReminders()
+            "widgetRefresh" -> TodoWidget.refresh(activity)
+            "installUpdate" -> Updater.install(activity)
             "openBatterySettings" -> startSafely(
                 Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:${activity.packageName}"))
             )
@@ -58,6 +60,7 @@ class Bridge(private val activity: MainActivity, private val prefs: Prefs) : Web
             .put("batteryUnrestricted", pm.isIgnoringBatteryOptimizations(activity.packageName))
             .put("appLock", prefs.appLock)
             .put("locationAllowed", Geofences.allowed(activity))
+            .put("update", Updater.available(activity)?.optString("version_name") ?: JSONObject.NULL)
     }
 
     private fun register(json: JSONObject, reply: JavaScriptReplyProxy) {

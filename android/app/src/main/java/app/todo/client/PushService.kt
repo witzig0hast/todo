@@ -170,6 +170,7 @@ class PushService : Service() {
         val replyToken = if (msg.isNull("reply_token")) null else msg.optString("reply_token").ifBlank { null }
         val options = msg.optJSONArray("options")?.let { arr -> (0 until arr.length()).map { arr.optString(it) }.filter { it.isNotBlank() } } ?: emptyList()
         val shown = Notifier.show(this, id, msg.optString("title", "Todo"), msg.optString("body", ""), url, actionToken, replyToken, options)
+        TodoWidget.refresh(this) // Meldungen betreffen meist Aufgaben -> Widget aktuell halten
         if (!shown) return // Benachrichtigungen aus: nicht bestätigen, der Server liefert später erneut
         try {
             val ack = Request.Builder()

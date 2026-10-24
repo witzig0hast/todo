@@ -178,10 +178,15 @@ class MainActivity : AppCompatActivity() {
         })
         applySecureFlag()
         if (prefs.serverUrl == null) showSetup() else showWeb(intent)
+        if (intent?.getBooleanExtra(EXTRA_UPDATE, false) == true) Updater.install(this)
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        if (intent.getBooleanExtra(EXTRA_UPDATE, false)) {
+            Updater.install(this)
+            return
+        }
         val server = prefs.serverUrl ?: return
         val target = targetPath(intent) ?: return
         val w = webView
@@ -204,7 +209,11 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         requireUnlock()
         // Falls das System den Dienst beendet hat: bei registriertem Gerät wieder starten
-        if (prefs.deviceToken != null) PushService.start(this)
+        if (prefs.deviceToken != null) {
+            PushService.start(this)
+            Updater.checkAsync(this)
+            TodoWidget.refresh(this)
+        }
     }
 
     override fun onPause() {
@@ -389,6 +398,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_URL = "url"
+        const val EXTRA_UPDATE = "update"
         private const val LOCK_GRACE_MS = 30_000L
     }
 }

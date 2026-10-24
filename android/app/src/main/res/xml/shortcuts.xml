@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:shortcutId="new"
+        android:enabled="true"
+        android:icon="@drawable/sc_add"
+        android:shortcutShortLabel="@string/sc_new">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="app.todo.client.QuickAddActivity"
+            android:targetPackage="app.todo.client" />
+    </shortcut>
+    <shortcut
+        android:shortcutId="dictate"
+        android:enabled="true"
+        android:icon="@drawable/sc_mic"
+        android:shortcutShortLabel="@string/sc_dictate">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="app.todo.client.MainActivity"
+            android:targetPackage="app.todo.client">
+            <extra android:name="url" android:value="/#/today?dictate=1" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="today"
+        android:enabled="true"
+        android:icon="@drawable/sc_today"
+        android:shortcutShortLabel="@string/sc_today">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="app.todo.client.MainActivity"
+            android:targetPackage="app.todo.client">
+            <extra android:name="url" android:value="/#/today" />
+        </intent>
+    </shortcut>
+    <shortcut
+        android:shortcutId="search"
+        android:enabled="true"
+        android:icon="@drawable/sc_search"
+        android:shortcutShortLabel="@string/sc_search">
+        <intent
+            android:action="android.intent.action.VIEW"
+            android:targetClass="app.todo.client.MainActivity"
+            android:targetPackage="app.todo.client">
+            <extra android:name="url" android:value="/#/search" />
+        </intent>
+    </shortcut>
+</shortcuts>

@@ -313,6 +313,7 @@ function openStream() {
     let op = null; try { op = JSON.parse(e.data).op; } catch (_) { /* */ }
     const [t, l, pp] = await Promise.all([api('/todos'), op === 'reload' ? api('/lists') : null, op === 'reload' ? api('/people') : null]);
     state.todos = t.todos; if (l) state.lists = l.lists; if (pp) state.people = pp.people;
+    if (hasAndroid()) { clearTimeout(state.widgetTimer); state.widgetTimer = setTimeout(() => nativeSend({ type: 'widgetRefresh' }), 1500); }
     const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#detail-pane, .overlay.detail');
     if (state.route === 'calendar') route(); else { renderTodos(); renderChrome(); if (!typing) renderDetail(); }
   }));
@@ -550,6 +551,7 @@ function viewTasks(view) {
   view.appendChild(h('div', { class: 'todo-list', id: 'todos' }));
   renderTodos();
   if (location.hash.includes('new=1')) setTimeout(() => { const i = $('#quick-input'); if (i) i.focus(); }, 50);
+  if (location.hash.includes('dictate=1')) { history.replaceState(null, '', '#/' + r); setTimeout(() => { const m = $('#mic'); if (m) m.click(); }, 300); } // App-Shortcut „Diktieren“
 }
 
 const DUE_LABELS = { any: 'Beliebig', overdue: 'Überfällig', today: 'Bis heute', week: 'Nächste 7 Tage', none: 'Ohne Datum' };
@@ -1964,7 +1966,9 @@ const refreshDevices = guard(async (box) => {
         !i.notificationsAllowed ? btn('Benachrichtigungen erlauben', 'sm', () => nativeSend({ type: 'openNotificationSettings' }), 'bell') : null,
         !i.batteryUnrestricted ? btn('Akku-Optimierung ausschalten', 'sm', () => nativeSend({ type: 'openBatterySettings' })) : null,
         btn(i.appLock ? 'App-Sperre aus' : 'App-Sperre (Fingerabdruck/PIN)', 'sm', () => { nativeSend({ type: 'setAppLock', enabled: !i.appLock }); i.appLock = !i.appLock; refreshDevices(box); }, 'lock'),
-        !i.locationAllowed ? btn('Standort-Erinnerungen erlauben', 'sm', () => nativeSend({ type: 'enableLocation' }), 'pin') : h('span', { class: 'chip dotted ok' }, 'Standort-Erinnerungen aktiv'))));
+        !i.locationAllowed ? btn('Standort-Erinnerungen erlauben', 'sm', () => nativeSend({ type: 'enableLocation' }), 'pin') : h('span', { class: 'chip dotted ok' }, 'Standort-Erinnerungen aktiv'),
+        i.update ? btn(`Update auf ${i.update} installieren`, 'sm primary', () => nativeSend({ type: 'installUpdate' }), 'refresh') : null),
+      h('div', { class: 'muted small' }, 'Tipp: Widget „Todo – Heute“ auf den Startbildschirm legen, lange aufs App-Symbol drücken (Neue Aufgabe, Diktieren) oder die Kachel „Neue Aufgabe“ in den Schnelleinstellungen hinzufügen.')));
   }
 });
 
@@ -2333,6 +2337,31 @@ function viewAdmin(view) {
       h('button', { class: 'icon-btn', 'aria-label': 'Einladung löschen', onclick: guard(async () => { await api('/admin/invites/' + i.id, { method: 'DELETE' }); loadInvites(); }) }, icon('trash')))));
   });
   loadInvites();
+  const aBox = h('div', { class: 'glass card col' });
+  view.appendChild(aBox);
+  const loadApk = guard(async () => {
+    const m = await api('/app/android'); clear(aBox);
+    const file = h('input', { type: 'file', accept: '.apk,application/vnd.android.package-archive', class: 'hidden' });
+    file.addEventListener('change', guard(async () => {
+      const f = file.files[0]; file.value = ''; if (!f) return;
+      const mm = f.name.match(/(\d+)\.(\d+)\.(\d+)/);
+      const name = mm ? mm[0] : prompt('Versionsname (z. B. 1.0.42):'); if (!name) return;
+      const code = mm ? Number(mm[3]) : Number(prompt('Versionsnummer (versionCode, ganze Zahl):')); if (!code) return;
+      toast('APK wird hochgeladen …');
+      const res = await fetch(`/api/app/android?version_code=${code}&version_name=${encodeURIComponent(name)}`, { method: 'POST', credentials: 'same-origin', body: f,
+        headers: { 'X-CSRF-Token': state.csrf, 'Content-Type': 'application/octet-stream' } });
+      let r = null; try { r = await res.json(); } catch (_) { /* */ }
+      if (!res.ok) throw new Error((r && r.detail) || 'Upload fehlgeschlagen.');
+      toast(`Version ${r.version_name} bereitgestellt – Geräte melden das Update`, 'ok'); loadApk();
+    }));
+    aBox.appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Android-App'), btn('APK hochladen', 'sm', () => file.click(), 'plus'), file));
+    aBox.appendChild(h('div', { class: 'small muted' }, m.available
+      ? `Aktuell: ${m.version_name} (${m.version_code}) · ${fmtSize(m.size)} · ${fmtTs(m.uploaded_at)} von ${m.uploaded_by}. Installierte Apps melden das Update selbst.`
+      : 'Noch keine Version hinterlegt. Lade die APK aus GitHub Actions hier hoch – oder lass die CI sie automatisch hochladen (siehe android/README.md).'));
+    if (m.available) aBox.appendChild(h('div', { class: 'row wrap' }, h('a', { class: 'btn sm', href: '/api/app/android/download', download: '' }, 'APK herunterladen'),
+      h('span', { class: 'small muted', style: 'overflow-wrap:anywhere' }, 'SHA-256: ' + m.sha256.slice(0, 16) + '…')));
+  });
+  loadApk();
   const bBox = h('div', { class: 'glass card col' });
   view.appendChild(bBox);
   const loadBackups = guard(async () => {

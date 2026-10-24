@@ -22,6 +22,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      # optional: fertige APK automatisch an den eigenen Todo-Server verteilen (App meldet dann „Update verfügbar“)
+      TODO_SERVER_URL: ${{ secrets.TODO_SERVER_URL }}
+      TODO_UPLOAD_TOKEN: ${{ secrets.TODO_UPLOAD_TOKEN }}
     steps:
       - uses: actions/checkout@v4
 
@@ -73,14 +77,16 @@ jobs:
             -PversionCode="${{ github.run_number }}" \
             -PversionName="1.0.${{ github.run_number }}"
 
-      - name: APK umbenennen
+      - name: APK umbenennen und Signatur prüfen
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/release/app-release.apk "dist/todo-1.0.${{ github.run_number }}.apk"
+          CERT="$("$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs "dist/todo-1.0.${{ github.run_number }}.apk" | grep -m1 'SHA-256 digest' | sed 's/.*: //')"
+          echo "CERT_SHA256=$CERT" >> "$GITHUB_ENV"
           {
             echo "### Android-APK gebaut"
-            echo "- Datei: \`todo-1.0.${{ github.run_number }}.apk\`"
-            echo "- Signatur: **$SIGNING**"
+            echo "- Datei: \`todo-1.0.${{ github.run_number }}.apk\` (versionCode ${{ github.run_number }})"
+            echo "- Signatur: **$SIGNING**, Zertifikat SHA-256: \`$CERT\`"
             if [ "$SIGNING" = "debug-key" ]; then
               echo "- Hinweis: Mit dem Debug-Schlüssel signiert. Für Updates ohne Neuinstallation ein dauerhaftes Keystore als Secret hinterlegen (siehe android/README.md)."
             fi
@@ -92,6 +98,16 @@ jobs:
           path: dist/*.apk
           if-no-files-found: error
 
+      - name: An den Todo-Server verteilen (optional)
+        if: env.TODO_UPLOAD_TOKEN != '' && env.TODO_SERVER_URL != ''
+        run: |
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $TODO_UPLOAD_TOKEN" \
+            -H "Content-Type: application/octet-stream" \
+            --data-binary "@dist/todo-1.0.${{ github.run_number }}.apk" \
+            "$TODO_SERVER_URL/api/app/android?version_code=${{ github.run_number }}&version_name=1.0.${{ github.run_number }}" > /dev/null
+          echo "- An $TODO_SERVER_URL verteilt – installierte Apps melden das Update." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Release veröffentlichen
         if: startsWith(github.ref, 'refs/tags/android-v') || github.event.inputs.release == 'true'
         uses: softprops/action-gh-release@v2
@@ -100,3 +116,7 @@ jobs:
           name: Android ${{ github.run_number }}
           files: dist/*.apk
           fail_on_unmatched_files: true
+          body: |
+            Todo für Android 1.0.${{ github.run_number }}
+            Signatur-Zertifikat (SHA-256): `${{ env.CERT_SHA256 }}`
+            Installierte Apps mit derselben Signatur lassen sich direkt aktualisieren.

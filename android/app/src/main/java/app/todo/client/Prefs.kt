@@ -40,8 +40,26 @@ class Prefs(context: Context) {
         get() = sp.getString("geofence_data", "{}") ?: "{}"
         set(value) { sp.edit().putString("geofence_data", value).apply() }
 
+    /** Letzte Widget-Daten (JSON), damit das Widget auch ohne Netz etwas zeigt. */
+    var widgetData: String
+        get() = sp.getString("widget_data", "{}") ?: "{}"
+        set(value) { sp.edit().putString("widget_data", value).apply() }
+
+    var lastUpdateCheck: Long
+        get() = sp.getLong("last_update_check", 0L)
+        set(value) { sp.edit().putLong("last_update_check", value).apply() }
+
+    /** Zuletzt gemeldete neuere App-Version (JSON vom Server) oder leer. */
+    var updateInfo: String
+        get() = sp.getString("update_info", "") ?: ""
+        set(value) { sp.edit().putString("update_info", value).apply() }
+
+    var notifiedUpdate: Int
+        get() = sp.getInt("notified_update", 0)
+        set(value) { sp.edit().putInt("notified_update", value).apply() }
+
     fun clearDevice() {
-        sp.edit().remove("device_token").remove("device_id").remove("device_name").apply()
+        sp.edit().remove("device_token").remove("device_id").remove("device_name").remove("widget_data").apply()
     }
 
     companion object {
