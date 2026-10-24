@@ -25,6 +25,13 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
 - **Fokus-Timer & Statistik:** 15/25/50-Minuten-Timer an einer Aufgabe (Zeit wird erfasst), Statistik mit erledigt pro Woche
   und Wochentag, Serie, Fokuszeit, Dauerbrennern – optional als **Wochenrückblick** sonntags um 18 Uhr.
 - **Geteilte Listen:** Listen per Benutzername mit anderen freigegebenen Benutzern teilen; Änderungen erscheinen live bei allen.
+- **Board & Projekte:** jede Liste auch als Board (Offen · In Arbeit · Erledigt, Ziehen mit der Maus, am Handy über „…“);
+  Listen können **Projekte** sein – mit Fortschrittsbalken und Termin.
+- **Abhängigkeiten:** „wartet auf …“ zwischen Aufgaben (Kreise werden verhindert); wird die letzte Voraussetzung erledigt,
+  kommt eine Benachrichtigung „Kann losgehen“.
+- **Zuweisen, Kommentare, Verlauf:** in geteilten Listen Aufgaben an Mitglieder zuweisen (Ansicht „Mir zugewiesen“),
+  Kommentare mit **@Erwähnungen** (Push an die Erwähnten) und ein Änderungsverlauf pro Aufgabe (wer hat wann was geändert).
+- **Einladungslinks:** Admins erzeugen Links mit Ablaufdatum und Nutzungszahl – wer sich darüber registriert, ist sofort freigegeben.
 - **Kalender-Abo (ICS):** geheimer Link für Handy-, Thunderbird-, Outlook- oder Nextcloud-Kalender (jederzeit neu erzeugbar/widerrufbar).
 - **Ollama:** Freitext → Aufgabe(n) („morgen 15 Uhr Zahnarzt anrufen und Milch kaufen“ ergibt zwei Aufgaben),
   Unteraufgaben vorschlagen, Tagesplan, Chat-Assistent. Der Assistent kann **Aktionen vorschlagen** (anlegen, erledigen,

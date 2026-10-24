@@ -25,6 +25,7 @@ class Credentials(BaseModel):
 
 class RegisterIn(Credentials):
     password: str = Field(min_length=10, max_length=256)
+    invite: str | None = Field(default=None, max_length=100)  # Einladungslink: sofort freigegeben
 
     @field_validator("username")
     @classmethod
@@ -65,13 +66,24 @@ def register(data: RegisterIn, request: Request, response: Response, conn: sqlit
         if conn.execute("SELECT 1 FROM users WHERE username = ?", (data.username,)).fetchone():
             raise HTTPException(409, "Benutzername bereits vergeben.")
         first = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
-        role, status = ("admin", "approved") if first else ("user", "pending")
+        invited = None
+        if data.invite and not first:
+            from .invites import consume
+
+            invited = consume(conn, data.invite)
+        role, status = ("admin", "approved") if first else ("user", "approved" if invited else "pending")
         cur = conn.execute(
             "INSERT INTO users (username, password_hash, role, status, created_at, approved_at) VALUES (?,?,?,?,?,?)",
-            (data.username, pw_hash, role, status, now(), now() if first else None),
+            (data.username, pw_hash, role, status, now(), now() if status == "approved" else None),
         )
         user_id = cur.lastrowid
-        audit(conn, data.username, "register", f"role={role} status={status}", user_id, ip)
+        audit(conn, data.username, "register", f"role={role} status={status}" + (f" invite={invited['id']}" if invited else ""), user_id, ip)
+    if invited:
+        token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
+        _set_cookie(response, token)
+        admins = [r["id"] for r in conn.execute("SELECT id FROM users WHERE role='admin' AND status='approved'")]
+        push.notify_threadsafe(admins, "Neues Mitglied", f"{data.username} hat sich per Einladung registriert.", "/#/admin")
+        return {"status": "approved", "admin": False}
     if first:
         token, _ = create_session(conn, user_id, request.headers.get("user-agent"))
         _set_cookie(response, token)

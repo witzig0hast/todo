@@ -247,6 +247,40 @@ CREATE TABLE IF NOT EXISTS templates (
   created_at TEXT NOT NULL,
   used_count INTEGER NOT NULL DEFAULT 0
 );
+CREATE TABLE IF NOT EXISTS todo_deps (
+  todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,        -- diese Aufgabe ...
+  blocked_by_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,  -- ... wartet auf diese
+  PRIMARY KEY (todo_id, blocked_by_id)
+);
+CREATE INDEX IF NOT EXISTS idx_deps_blocker ON todo_deps(blocked_by_id);
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  author TEXT NOT NULL,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_comments_todo ON comments(todo_id, id);
+CREATE TABLE IF NOT EXISTS todo_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,           -- created, title, due_at, done, list, priority, assignee, stage, ...
+  detail TEXT,                    -- JSON {from, to} oder Text
+  at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_history_todo ON todo_history(todo_id, id);
+CREATE TABLE IF NOT EXISTS invites (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  token_hash TEXT NOT NULL UNIQUE,
+  created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  note TEXT NOT NULL DEFAULT '',
+  max_uses INTEGER NOT NULL DEFAULT 1,
+  uses INTEGER NOT NULL DEFAULT 0,
+  expires_at TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -290,6 +324,10 @@ COLUMNS = [
     ("todos", "tracked_min", "INTEGER NOT NULL DEFAULT 0"),    # Fokus-Timer: erfasste Minuten
     ("user_settings", "review_enabled", "INTEGER NOT NULL DEFAULT 0"),  # Wochenrückblick (So 18 Uhr)
     ("user_settings", "review_sent_on", "TEXT"),
+    ("todos", "stage", "TEXT NOT NULL DEFAULT 'todo'"),         # Kanban: todo | doing (erledigt = done)
+    ("todos", "assignee_id", "INTEGER REFERENCES users(id) ON DELETE SET NULL"),
+    ("lists", "kind", "TEXT NOT NULL DEFAULT 'list'"),          # list | project
+    ("lists", "due_at", "TEXT"),                                # Projekt-Termin
 ]
 
 

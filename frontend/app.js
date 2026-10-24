@@ -27,7 +27,9 @@ const ICONS = {
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>', chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
   undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/>', play: '<path d="M7 4l13 8-13 8z"/>', pause: '<path d="M8 4v16M16 4v16"/>',
   stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>', select: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12l3 3 5-6"/>',
-  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>', timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>', board: '<rect x="3" y="4" width="5" height="16" rx="1.5"/><rect x="10" y="4" width="5" height="10" rx="1.5"/><rect x="17" y="4" width="4" height="13" rx="1.5"/>',
+  comment: '<path d="M21 12a8 8 0 01-11.6 7.1L4 20l1-4.6A8 8 0 1121 12z"/>', folder: '<path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 7l9 6 9-6"/>', timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
 };
 function icon(name, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -132,6 +134,7 @@ async function boot() {
   if (shared) { state.shareText = shared.slice(0, 4000); history.replaceState(null, '', '/#/share'); }
   const ssoCode = qp.get('sso');
   if (ssoCode) history.replaceState(null, '', location.pathname + location.hash); // Parameter aus der URL entfernen
+  if (qp.get('invite')) { state.invite = qp.get('invite').slice(0, 100); history.replaceState(null, '', location.pathname + location.hash); }
   if (!state.user) {
     closeStream();
     if (ssoCode === 'choose') {
@@ -184,7 +187,10 @@ function renderAuth(root, sso = { providers: [], local_auth: true }, ssoCode = n
   const form = h('form', { class: 'col', onsubmit: async (e) => {
     e.preventDefault(); err.textContent = ''; submit.disabled = true;
     try {
-      const r = await api(mode === 'login' ? '/auth/login' : '/auth/register', { method: 'POST', body: { username: user.value, password: pw.value }, noAuthRedirect: true });
+      const body = { username: user.value, password: pw.value };
+      if (mode === 'register' && state.invite) body.invite = state.invite;
+      const r = await api(mode === 'login' ? '/auth/login' : '/auth/register', { method: 'POST', body, noAuthRedirect: true });
+      if (mode === 'register' && state.invite) state.invite = null;
       if (mode === 'register' && r.status === 'pending') {
         err.className = 'error notice'; err.textContent = 'Registriert! Ein Administrator muss dein Konto noch freigeben.'; setMode('login'); err.className = 'error notice'; err.textContent = 'Registriert! Ein Administrator muss dein Konto noch freigeben.'; pw.value = '';
       } else if (r.twofa_required) { renderTwoFactor(root, r.ticket); } else { boot(); }
@@ -196,6 +202,13 @@ function renderAuth(root, sso = { providers: [], local_auth: true }, ssoCode = n
   local ? [fieldUser, fieldPw] : null, err, local ? submit : null, local ? toggleRow : null);
   setMode('login');
   if (!local) sub.textContent = 'Melde dich mit deinem Single-Sign-On-Konto an.';
+  if (state.invite && local) {
+    setMode('register');
+    api('/auth/invite/' + encodeURIComponent(state.invite), { noAuthRedirect: true }).then((r) => {
+      if (r.valid) { title.textContent = 'Willkommen!'; sub.textContent = (r.by ? `${r.by} hat dich eingeladen` : 'Du wurdest eingeladen') + (r.note ? ` (${r.note})` : '') + '. Dein Konto ist sofort aktiv.'; }
+      else { state.invite = null; err.textContent = 'Diese Einladung ist ungültig oder abgelaufen. Du kannst dich trotzdem registrieren – dann muss ein Admin freigeben.'; }
+    }).catch(() => {});
+  }
   if (ssoCode && SSO_MESSAGES[ssoCode]) { err.className = 'error ' + (SSO_MESSAGES[ssoCode][0] === 'notice' ? 'notice' : ''); err.textContent = SSO_MESSAGES[ssoCode][1]; }
   root.appendChild(h('div', { class: 'auth' }, h('div', { class: 'auth-card glass' }, form)));
   if (local) user.focus();
@@ -279,8 +292,8 @@ async function passkeyRegister() {
 }
 
 async function loadAll() {
-  const [t, l, s, f] = await Promise.all([api('/todos'), api('/lists'), api('/settings'), api('/filters')]);
-  state.todos = t.todos; state.lists = l.lists; state.settings = s; state.filters = f.filters;
+  const [t, l, s, f, pp] = await Promise.all([api('/todos'), api('/lists'), api('/settings'), api('/filters'), api('/people')]);
+  state.todos = t.todos; state.lists = l.lists; state.settings = s; state.filters = f.filters; state.people = pp.people;
   const tz = (Intl.DateTimeFormat().resolvedOptions() || {}).timeZone;
   if (tz && s.tz !== tz) api('/settings', { method: 'PUT', body: { tz } }).then((r) => { state.settings = r; }).catch(() => {});
 }
@@ -297,9 +310,10 @@ function openStream() {
   state.sse = es;
   es.addEventListener('todo', guard(async (e) => {
     let op = null; try { op = JSON.parse(e.data).op; } catch (_) { /* */ }
-    const [t, l] = await Promise.all([api('/todos'), op === 'reload' ? api('/lists') : null]);
-    state.todos = t.todos; if (l) state.lists = l.lists;
-    if (state.route === 'calendar') route(); else { renderTodos(); renderChrome(); renderDetail(); }
+    const [t, l, pp] = await Promise.all([api('/todos'), op === 'reload' ? api('/lists') : null, op === 'reload' ? api('/people') : null]);
+    state.todos = t.todos; if (l) state.lists = l.lists; if (pp) state.people = pp.people;
+    const typing = document.activeElement && document.activeElement.closest && document.activeElement.closest('#detail-pane, .overlay.detail');
+    if (state.route === 'calendar') route(); else { renderTodos(); renderChrome(); if (!typing) renderDetail(); }
   }));
   es.addEventListener('bus', (e) => {
     const m = JSON.parse(e.data);
@@ -317,7 +331,10 @@ const NAV = [
   { id: 'all', label: 'Alle', icon: 'list' }, { id: 'done', label: 'Erledigt', icon: 'done' },
 ];
 const open = (t) => !t.done && !t.parent_id;
-const isTaskRoute = (r) => NAV.some((n) => n.id === r) || /^(list|filter|tag)\//.test(r) || r === 'search';
+const isTaskRoute = (r) => NAV.some((n) => n.id === r) || /^(list|filter|tag)\//.test(r) || r === 'search' || r === 'assigned';
+const personName = (id) => { const p = (state.people || []).find((x) => x.id === id); return p ? p.username : null; };
+const byId = (id) => state.todos.find((x) => x.id === id);
+const openBlockers = (t) => (t.blocked_by || []).map(byId).filter((b) => b && !b.done);
 const counts = () => ({
   today: state.todos.filter((t) => open(t) && t.due_at && new Date(t.due_at) <= endOfToday()).length,
   upcoming: state.todos.filter((t) => open(t) && t.due_at && new Date(t.due_at) > endOfToday()).length,
@@ -369,14 +386,21 @@ function renderChrome() {
   side.appendChild(h('div', { class: 'brand' }, h('div', { class: 'logo' }, icon('check')), 'Todo'));
   side.appendChild(item('search', 'Suche', 'search', h('span', { class: 'count' }, '/')));
   NAV.forEach((n) => side.appendChild(item(n.id, n.label, n.icon, h('span', { class: 'count' }, n.id === 'done' ? '' : c[n.id] || ''))));
+  const assigned = state.todos.filter((t) => open(t) && t.assignee_id === state.user.id).length;
+  if (assigned || state.route === 'assigned') side.appendChild(item('assigned', 'Mir zugewiesen', 'user', h('span', { class: 'count' }, assigned || '')));
   side.appendChild(item('calendar', 'Kalender', 'cal'));
   side.appendChild(item('stats', 'Statistik', 'chart'));
   side.appendChild(h('div', { class: 'nav-sep' }));
-  side.appendChild(h('div', { class: 'nav-title' }, 'Listen', h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Neue Liste', onclick: newList }, icon('plus'))));
-  state.lists.forEach((l) => {
+  const listItem = (l) => {
     const n = state.todos.filter((t) => open(t) && t.list_id === l.id).length;
-    side.appendChild(h('button', { class: 'nav-item' + (state.route === 'list/' + l.id ? ' on' : ''), onclick: () => go('list/' + l.id) }, icon(l.mine === false || (l.members || []).length ? 'users' : 'list'), h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis' }, l.name), h('span', { class: 'count' }, n || '')));
-  });
+    const shared = l.mine === false || (l.members || []).length;
+    const extra = l.kind === 'project' ? h('span', { class: 'count' }, projectProgress(l).pct + ' %') : h('span', { class: 'count' }, n || '');
+    return h('button', { class: 'nav-item' + (state.route === 'list/' + l.id ? ' on' : ''), onclick: () => go('list/' + l.id) }, icon(l.kind === 'project' ? 'folder' : shared ? 'users' : 'list'), h('span', { class: 'grow', style: 'overflow:hidden;text-overflow:ellipsis' }, l.name), extra);
+  };
+  const projects = state.lists.filter((l) => l.kind === 'project');
+  if (projects.length) { side.appendChild(h('div', { class: 'nav-title' }, 'Projekte')); projects.forEach((l) => side.appendChild(listItem(l))); }
+  side.appendChild(h('div', { class: 'nav-title' }, 'Listen', h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Neue Liste oder Projekt', onclick: newList }, icon('plus'))));
+  state.lists.filter((l) => l.kind !== 'project').forEach((l) => side.appendChild(listItem(l)));
   if (state.filters.length) {
     side.appendChild(h('div', { class: 'nav-title' }, 'Filter'));
     state.filters.forEach((f) => side.appendChild(item('filter/' + f.id, f.name, 'filter', h('span', { class: 'count' }, applyQuery(state.todos.filter((t) => !t.parent_id), f.query).length || ''))));
@@ -408,14 +432,41 @@ function renderChrome() {
   tabs.appendChild(tab('settings', 'Mehr', 'gear', state.pendingUsers, more));
 }
 
-const guardList = guard;
-const newList = guardList(async () => {
-  const name = prompt('Name der neuen Liste:');
-  if (!name || !name.trim()) return;
-  const colors = ['#8b6bff', '#3ed1c0', '#ff6b81', '#ffb454', '#5ab0ff', '#9be15d'];
-  const l = await api('/lists', { method: 'POST', body: { name: name.trim(), color: colors[state.lists.length % colors.length] } });
-  state.lists.push(l); renderChrome(); go('list/' + l.id);
-});
+const newList = () => listSheet();
+function listSheet(list) {
+  const editing = !!list; list = list || { name: '', kind: 'list', due_at: null };
+  let kind = list.kind || 'list';
+  const name = h('input', { type: 'text', maxlength: 60, value: list.name, placeholder: 'z. B. Einkauf oder Umzug 2027', required: true });
+  const due = h('input', { type: 'date', value: list.due_at ? toLocalInput(list.due_at).slice(0, 10) : '', 'aria-label': 'Termin' });
+  const dueField = h('label', { class: 'field' + (kind === 'project' ? '' : ' hidden') }, 'Projekt-Termin (optional)', due);
+  const seg = h('div', { class: 'seg' });
+  const drawSeg = () => { clear(seg); [['list', 'Liste'], ['project', 'Projekt']].forEach(([k, l]) => seg.appendChild(h('button', { type: 'button', class: kind === k ? 'on' : '', onclick: () => { kind = k; drawSeg(); dueField.classList.toggle('hidden', k !== 'project'); } }, l))); };
+  drawSeg();
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    const body = { name: name.value.trim(), kind, due_at: kind === 'project' && due.value ? new Date(due.value + 'T18:00').toISOString() : null };
+    if (editing) { Object.assign(list, await api('/lists/' + list.id, { method: 'PATCH', body })); close(); route(); return; }
+    const colors = ['#8b6bff', '#3ed1c0', '#ff6b81', '#ffb454', '#5ab0ff', '#9be15d'];
+    const l = await api('/lists', { method: 'POST', body: { ...body, color: colors[state.lists.length % colors.length] } });
+    state.lists.push(l); close(); renderChrome(); go('list/' + l.id);
+  }) }, h('h2', {}, editing ? 'Bearbeiten' : 'Neue Liste'), h('label', { class: 'field' }, 'Name', name),
+  h('div', { class: 'field' }, 'Art', seg, h('span', { class: 'small muted' }, 'Projekte zeigen Fortschritt und Termin – ideal für Vorhaben mit vielen Schritten.')), dueField,
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, editing ? 'Speichern' : 'Anlegen'))));
+  name.focus();
+}
+function projectProgress(l) {
+  const items = state.todos.filter((t) => !t.parent_id && t.list_id === l.id);
+  const done = items.filter((t) => t.done).length;
+  return { done, total: items.length, pct: items.length ? Math.round((100 * done) / items.length) : 0 };
+}
+function projectBar(l) {
+  const p = projectProgress(l), bar = h('i'); bar.style.width = p.pct + '%';
+  const late = l.due_at && new Date(l.due_at) < new Date() && p.done < p.total;
+  return h('div', { class: 'glass card col', style: 'gap:8px;padding:14px 16px' },
+    h('div', { class: 'row small' }, h('strong', { class: 'grow' }, `${p.pct} %`), h('span', { class: 'muted' }, `${p.done} von ${p.total} erledigt`),
+      l.due_at ? h('span', { class: 'chip' + (late ? ' danger' : '') }, icon('flag'), 'bis ' + new Date(l.due_at).toLocaleDateString('de-DE', { day: '2-digit', month: '2-digit', year: 'numeric' })) : null),
+    h('div', { class: 'progress' }, bar));
+}
 
 // ------------------------------------------------------------------ Aufgaben-Ansicht
 function applyQuery(items, f) {
@@ -443,14 +494,15 @@ function filteredTodos() {
   if (r === 'search') return applyQuery(items, state.search);
   if (r.startsWith('tag/')) return applyQuery(items, { tags: [routeTag()] });
   if (r.startsWith('filter/')) { const f = routeFilter(); return f ? applyQuery(items, f.query) : []; }
-  if (r === 'today') items = items.filter((t) => !t.done && t.due_at && new Date(t.due_at) <= end);
+  if (r === 'assigned') items = items.filter((t) => !t.done && t.assignee_id === state.user.id);
+  else if (r === 'today') items = items.filter((t) => !t.done && t.due_at && new Date(t.due_at) <= end);
   else if (r === 'upcoming') items = items.filter((t) => !t.done && t.due_at && new Date(t.due_at) > end);
   else if (r === 'all') items = items.filter((t) => !t.done);
   else if (r === 'done') items = items.filter((t) => t.done).sort((a, b) => (b.done_at || '').localeCompare(a.done_at || ''));
   else if (r.startsWith('list/')) items = items.filter((t) => t.list_id === Number(r.slice(5)));
   return items;
 }
-const titles = { today: 'Heute', upcoming: 'Geplant', all: 'Alle Aufgaben', done: 'Erledigt' };
+const titles = { today: 'Heute', upcoming: 'Geplant', all: 'Alle Aufgaben', done: 'Erledigt', assigned: 'Mir zugewiesen' };
 
 function viewTasks(view) {
   const r = state.route;
@@ -478,7 +530,7 @@ function viewTasks(view) {
     list ? h('div', { class: 'row' },
       list.mine !== false ? h('button', { class: 'icon-btn', 'aria-label': 'Liste teilen', title: 'Teilen', onclick: () => shareListSheet(list) }, icon('users')) : null,
       list.mine === false ? btn('Verlassen', 'sm', guard(async () => { if (!confirm(`Geteilte Liste „${list.name}“ verlassen?`)) return; await api(`/lists/${list.id}/members/${encodeURIComponent(state.user.username)}`, { method: 'DELETE' }); state.lists = state.lists.filter((x) => x.id !== list.id); go('today'); })) : null,
-      list.mine === false ? null : h('button', { class: 'icon-btn', 'aria-label': 'Liste umbenennen', onclick: guard(async () => { const n = prompt('Neuer Name:', list.name); if (!n || !n.trim()) return; Object.assign(list, await api('/lists/' + list.id, { method: 'PATCH', body: { name: n.trim() } })); route(); }) }, icon('more')),
+      list.mine === false ? null : h('button', { class: 'icon-btn', 'aria-label': 'Liste bearbeiten', title: 'Bearbeiten', onclick: () => listSheet(list) }, icon('more')),
       list.mine === false ? null : h('button', { class: 'icon-btn', 'aria-label': 'Liste löschen', onclick: guard(async () => { if (!confirm(`Liste „${list.name}“ löschen? Aufgaben bleiben erhalten.`)) return; await api('/lists/' + list.id, { method: 'DELETE' }); state.lists = state.lists.filter((x) => x.id !== list.id); state.todos.forEach((t) => { if (t.list_id === list.id) t.list_id = null; }); go('today'); }) }, icon('trash'))) : null,
     !list && r !== 'done' ? h('div', { class: 'row search-btn', style: 'gap:0' }, h('button', { class: 'icon-btn', 'aria-label': 'Kalender', onclick: () => go('calendar') }, icon('cal')),
       h('button', { class: 'icon-btn', 'aria-label': 'Suchen', onclick: () => go('search') }, icon('search'))) : null,
@@ -489,6 +541,7 @@ function viewTasks(view) {
       if (x.count) undoToast(`${x.count} erledigte Aufgabe${x.count === 1 ? '' : 'n'} im Papierkorb`, x.trash_id);
     }), 'trash') : null));
   addHeadTools(view);
+  if (list && list.kind === 'project') view.appendChild(projectBar(list));
   if (r !== 'done') view.appendChild(quickBar());
   view.appendChild(h('div', { id: 'draft' }));
   view.appendChild(h('div', { id: 'progress' }));
@@ -753,6 +806,8 @@ function renderTodos() {
   renderBulk();
   const box = $('#todos'); if (!box) return;
   clear(box);
+  box.classList.toggle('board-mode', boardOn());
+  if (boardOn()) { clear($('#progress')); return renderBoard(box); }
   const items = filteredTodos();
   const r = state.route;
   const p = clear($('#progress'));
@@ -787,6 +842,15 @@ function renderTodos() {
   });
 }
 
+function collabChips(t) {
+  const blockers = openBlockers(t), who = t.assignee_id ? personName(t.assignee_id) : null;
+  return [
+    !t.done && t.stage === 'doing' ? h('span', { class: 'chip' }, icon('play'), 'In Arbeit') : null,
+    who ? h('span', { class: 'chip', title: 'Zuständig: ' + who }, h('b', { class: 'mini-avatar' }, who[0]), who === state.user.username ? 'Du' : who) : null,
+    !t.done && blockers.length ? h('span', { class: 'chip', title: 'Wartet auf: ' + blockers.map((b) => b.title).join(', ') }, icon('lock'), 'wartet auf ' + (blockers.length === 1 ? '„' + blockers[0].title.slice(0, 24) + '“' : blockers.length)) : null,
+    t.comment_count ? h('span', { class: 'chip', title: 'Kommentare' }, icon('comment'), t.comment_count) : null];
+}
+
 function todoRow(t) {
   const subs = state.todos.filter((s) => s.parent_id === t.id);
   const list = state.lists.find((l) => l.id === t.list_id);
@@ -805,6 +869,7 @@ function todoRow(t) {
         t.location ? h('span', { class: 'chip' }, icon('pin'), t.location.name || 'Ort') : null,
         t.recurrence_text ? h('span', { class: 'chip', title: t.recurrence_text }, icon('repeat'), t.recurrence_text.replace(' (ab Erledigung)', '')) : null,
         t.tracked_min ? h('span', { class: 'chip', title: 'Erfasste Fokuszeit' }, icon('timer'), fmtMin(t.tracked_min)) : null,
+        ...collabChips(t),
         (t.tags || []).map((g) => h('button', { type: 'button', class: 'chip tag', onclick: (e) => { e.stopPropagation(); go('tag/' + encodeURIComponent(g)); } }, '#' + g)),
         t.created_by !== 'user' ? h('span', { class: 'chip' }, icon('bus'), t.created_by) : null)));
   const wrap = h('div', { class: 'todo-wrap' },
@@ -842,6 +907,8 @@ function attachSwipe(row, t) {
 }
 
 const toggleDone = guard(async (t) => {
+  const blockers = !t.done ? openBlockers(t) : [];
+  if (blockers.length && !confirm(`„${t.title}“ wartet noch auf: ${blockers.map((b) => b.title).join(', ')}. Trotzdem erledigen?`)) return;
   const u = await api('/todos/' + t.id, { method: 'PATCH', body: { done: !t.done } });
   const next = u.next; delete u.next;
   Object.assign(t, u);
@@ -979,11 +1046,13 @@ function detailBody(t) {
       toast(`${subtasks.length} Unteraufgaben angelegt`, 'ok');
     } finally { aiBtn.disabled = false; }
   }), 'spark');
+  const collab = collabSection(t, save);
   return h('div', { class: 'col', style: 'gap:14px' },
     h('div', { class: 'row' }, h('h2', { class: 'grow' }, 'Details'), h('button', { class: 'icon-btn', 'aria-label': 'Schließen', onclick: () => { state.selected = null; renderTodos(); renderDetail(); } }, icon('x'))),
     h('label', { class: 'field' }, 'Titel', title), h('label', { class: 'field' }, 'Notizen', notes),
     h('label', { class: 'field' }, 'Fällig', due), h('label', { class: 'field' }, 'Liste', sel),
     h('div', { class: 'field' }, 'Priorität', prioSeg(t.priority, (p) => save({ priority: p }))),
+    collab.top,
     h('label', { class: 'field' }, 'Tags', tagsIn),
     h('div', { class: 'field' }, 'Wiederholung', freq, recExtra),
     h('div', { class: 'field' }, 'Erinnerungen' + (t.due_at ? '' : ' (wirken erst mit Fälligkeit)'), remBox),
@@ -992,6 +1061,7 @@ function detailBody(t) {
     !t.done ? h('div', { class: 'field' }, 'Erinnere mich', h('div', { class: 'row wrap' }, snoozeBtn('in 10 Min.', 10), snoozeBtn('in 1 Std.', 60), snoozeBtn('morgen 9:00', tomorrow9))) : null,
     h('div', { class: 'col', style: 'gap:6px' }, h('div', { class: 'row' }, h('span', { class: 'muted small grow' }, 'Unteraufgaben'), aiBtn), subsBox,
       h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); const v = subInput.value.trim(); if (v) { subInput.value = ''; addSub(v); } } }, subInput, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Hinzufügen' }, icon('plus')))),
+    collab.bottom,
     h('div', { class: 'field' }, 'Fokus-Timer' + (t.tracked_min ? ` · bisher ${fmtMin(t.tracked_min)} erfasst` : ''),
       !t.done ? h('div', { class: 'row wrap' }, [15, 25, 50].map((m) => btn(m + ' min', 'sm', () => startFocus(t, m), 'play'))) : null),
     h('div', { class: 'muted small' }, `Erstellt ${fmtTs(t.created_at)}${t.created_by !== 'user' ? ' von Agent ' + t.created_by : ''}`),
@@ -1056,8 +1126,70 @@ function addHeadTools(view) {
   const tools = h('div', { class: 'row', style: 'gap:0' });
   [...head.children].slice(1).forEach((c) => tools.appendChild(c));
   if (state.route !== 'done') tools.appendChild(h('button', { class: 'icon-btn', 'aria-label': 'Aus Vorlage anlegen', title: 'Aus Vorlage', onclick: templatePicker }, icon('layers')));
+  if (boardable()) tools.appendChild(h('button', { class: 'icon-btn' + (boardOn() ? ' on' : ''), 'aria-label': boardOn() ? 'Als Liste anzeigen' : 'Als Board anzeigen', title: boardOn() ? 'Liste' : 'Board', 'aria-pressed': String(boardOn()), onclick: () => setBoard(!boardOn()) }, icon(boardOn() ? 'list' : 'board')));
   tools.appendChild(h('button', { class: 'icon-btn', 'aria-label': 'Mehrere auswählen', title: 'Mehrere auswählen', onclick: () => (state.selecting ? stopSelecting() : startSelecting()) }, icon('select')));
   head.appendChild(tools);
+}
+
+// ------------------------------------------------------------------ Board (Kanban): Offen · In Arbeit · Erledigt
+const boardable = () => /^(list|tag|filter)\//.test(state.route) || ['all', 'assigned'].includes(state.route);
+const boardOn = () => { if (!boardable()) return false; try { return localStorage.getItem('board:' + state.route) === '1'; } catch (_) { return false; } };
+const setBoard = (on) => { try { localStorage.setItem('board:' + state.route, on ? '1' : '0'); } catch (_) { /* privat */ } route(); };
+const COLUMNS = [['todo', 'Offen'], ['doing', 'In Arbeit'], ['done', 'Erledigt']];
+function boardItems() {
+  const r = state.route, top = state.todos.filter((t) => !t.parent_id);
+  if (r.startsWith('list/')) return top.filter((t) => t.list_id === Number(r.slice(5)));
+  if (r === 'assigned') return top.filter((t) => t.assignee_id === state.user.id);
+  if (r.startsWith('tag/')) return applyQuery(top, { tags: [routeTag()], include_done: true });
+  if (r.startsWith('filter/')) { const f = routeFilter(); return f ? applyQuery(top, { ...f.query, include_done: true }) : []; }
+  return top;
+}
+const moveCard = guard(async (t, col) => {
+  if ((col === 'done') === t.done && (col === 'done' || t.stage === col)) return;
+  if (col === 'done' && openBlockers(t).length && !confirm(`„${t.title}“ wartet noch auf andere Aufgaben. Trotzdem erledigen?`)) return;
+  const u = await api('/todos/' + t.id, { method: 'PATCH', body: col === 'done' ? { done: true } : { stage: col } });
+  const next = u.next; delete u.next; Object.assign(t, u);
+  if (next) state.todos = (await api('/todos')).todos;
+  renderTodos(); renderChrome();
+});
+function renderBoard(box) {
+  const items = boardItems();
+  const weekAgo = Date.now() - 14 * 86400000;
+  const cols = {
+    todo: items.filter((t) => !t.done && t.stage !== 'doing'),
+    doing: items.filter((t) => !t.done && t.stage === 'doing'),
+    done: items.filter((t) => t.done && (!t.done_at || new Date(t.done_at).getTime() > weekAgo)).sort((a, b) => (b.done_at || '').localeCompare(a.done_at || '')).slice(0, 30),
+  };
+  const board = h('div', { class: 'board' });
+  COLUMNS.forEach(([key, label]) => {
+    const list = h('div', { class: 'board-list' });
+    const col = h('section', { class: 'board-col glass', 'data-col': key, 'aria-label': label },
+      h('div', { class: 'board-head' }, h('span', {}, label), h('span', { class: 'count' }, cols[key].length)), list);
+    col.addEventListener('dragover', (e) => { e.preventDefault(); col.classList.add('drop'); });
+    col.addEventListener('dragleave', (e) => { if (!col.contains(e.relatedTarget)) col.classList.remove('drop'); });
+    col.addEventListener('drop', (e) => { e.preventDefault(); col.classList.remove('drop'); const t = byId(Number(e.dataTransfer.getData('text/plain'))); if (t) moveCard(t, key); });
+    cols[key].forEach((t) => list.appendChild(boardCard(t, key)));
+    if (!cols[key].length) list.appendChild(h('div', { class: 'board-empty small muted' }, key === 'done' ? 'Noch nichts erledigt' : 'Hierher ziehen'));
+    board.appendChild(col);
+  });
+  box.appendChild(board);
+}
+function boardCard(t, key) {
+  const list = state.lists.find((l) => l.id === t.list_id);
+  const overdue = !t.done && t.due_at && new Date(t.due_at) < new Date();
+  const picked = state.selecting && state.picked.has(t.id);
+  const card = h('div', { class: 'kcard' + (t.done ? ' done' : '') + (state.selected === t.id ? ' sel' : '') + (picked ? ' picked' : ''), draggable: 'true', tabindex: 0, role: 'button', 'aria-label': t.title,
+    onclick: () => (state.selecting ? togglePick(t.id) : select(t.id)), onkeydown: (e) => { if (e.key === 'Enter') select(t.id); } },
+  h('div', { class: 'row', style: 'align-items:flex-start;gap:8px' }, h('div', { class: 'grow kcard-title' }, t.title),
+    h('button', { class: 'icon-btn kcard-move', type: 'button', 'aria-label': 'Verschieben', onclick: (e) => { e.stopPropagation(); choiceSheet('„' + t.title + '“ verschieben', COLUMNS.filter(([k]) => k !== key).map(([k, l]) => [l, () => moveCard(t, k)])); } }, icon('more'))),
+  h('div', { class: 't-meta' },
+    t.due_at ? h('span', { class: 'chip' + (overdue ? ' danger' : '') }, icon('clock'), fmtDue(t.due_at)) : null,
+    t.priority === 3 ? h('span', { class: 'chip danger' }, icon('flag'), 'Hoch') : null,
+    list && !state.route.startsWith('list/') ? h('span', { class: 'chip' }, list.name) : null,
+    ...collabChips(t).filter((c) => c && !/In Arbeit/.test(c.textContent))));
+  card.addEventListener('dragstart', (e) => { e.dataTransfer.setData('text/plain', String(t.id)); e.dataTransfer.effectAllowed = 'move'; card.classList.add('dragging'); });
+  card.addEventListener('dragend', () => card.classList.remove('dragging'));
+  return card;
 }
 
 // ------------------------------------------------------------------ Vorlagen
@@ -1268,6 +1400,73 @@ function viewStats(view) {
       h('div', { class: 'small muted' }, 'Jeden Sonntag um 18 Uhr eine Benachrichtigung. So sähe sie gerade aus:'),
       h('div', { class: 'preview-note' }, h('strong', {}, s.review_preview.title), h('div', { class: 'small muted' }, s.review_preview.body))));
   })();
+}
+
+// ------------------------------------------------------------------ Zusammenarbeit in den Details
+const HIST = {
+  created: () => 'hat die Aufgabe angelegt', notes: () => 'Notizen geändert', recurrence: () => 'Wiederholung geändert',
+  title: (d) => `Titel: „${d.from}“ → „${d.to}“`, due_at: (d) => (d.to ? 'Fällig: ' + fmtDue(d.to) : 'Fälligkeit entfernt'),
+  done: (d) => (d.to ? 'erledigt' : 'wieder geöffnet'), priority: (d) => 'Priorität: ' + ['Keine', 'Niedrig', 'Mittel', 'Hoch'][d.to],
+  list_id: (d) => { const l = state.lists.find((x) => x.id === d.to); return 'Liste: ' + (l ? l.name : d.to ? 'andere Liste' : 'keine'); },
+  assignee: (d) => (d.to ? 'zugewiesen an ' + d.to : 'Zuweisung entfernt'), stage: (d) => (d.to === 'doing' ? 'in Arbeit genommen' : 'zurück auf offen'),
+  dep_added: (d) => `wartet jetzt auf „${d.title}“`, dep_removed: (d) => `wartet nicht mehr auf „${d.title}“`,
+};
+function mentionText(body) {
+  return body.split(/(@[A-Za-z0-9_.-]{3,32})/).map((part) => (part.startsWith('@') ? h('span', { class: 'mention' }, part) : part));
+}
+function collabSection(t, save) {
+  const list = state.lists.find((l) => l.id === t.list_id);
+  const shared = list && (list.mine === false || (list.members || []).length);
+  // Status (Board) und Zuständigkeit
+  const stageSeg = h('div', { class: 'seg', role: 'group', 'aria-label': 'Status' });
+  const drawStage = () => { clear(stageSeg); [['todo', 'Offen'], ['doing', 'In Arbeit']].forEach(([k, l]) => stageSeg.appendChild(h('button', { type: 'button', class: (t.stage || 'todo') === k ? 'on' : '', onclick: async () => { await save({ stage: k }); drawStage(); } }, l))); };
+  drawStage();
+  const names = shared ? [...new Set([list.owner, ...(list.members || [])])].sort((a, b) => a.localeCompare(b)) : [state.user.username];
+  const current = t.assignee_id ? personName(t.assignee_id) : '';
+  const assignee = h('select', { 'aria-label': 'Zuständig', onchange: () => save({ assignee: assignee.value }) },
+    h('option', { value: '' }, 'Niemand'), names.map((n) => h('option', { value: n, selected: n === current }, n === state.user.username ? n + ' (ich)' : n)));
+  const top = h('div', { class: 'search-grid' }, !t.done ? h('div', { class: 'field' }, 'Status', stageSeg) : null, h('label', { class: 'field' }, 'Zuständig', assignee));
+  // Abhängigkeiten
+  const depBox = h('div', { class: 'col', style: 'gap:6px' });
+  const drawDeps = () => {
+    clear(depBox);
+    (t.blocked_by || []).forEach((id) => { const b = byId(id);
+      depBox.appendChild(h('div', { class: 'row small' }, icon(b && b.done ? 'check' : 'lock'), h('button', { type: 'button', class: 'grow link-btn', style: 'text-align:left;font-size:.875rem', onclick: () => select(id) }, b ? b.title : 'Aufgabe #' + id),
+        h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Abhängigkeit entfernen', onclick: guard(async () => { Object.assign(t, await api(`/todos/${t.id}/deps/${id}`, { method: 'DELETE' })); drawDeps(); renderTodos(); }) }, icon('x')))); });
+    const options = state.todos.filter((x) => !x.parent_id && !x.done && x.id !== t.id && !(t.blocked_by || []).includes(x.id)).sort((a, b) => a.title.localeCompare(b.title)).slice(0, 300);
+    if (options.length) {
+      const sel = h('select', { 'aria-label': 'Wartet auf', onchange: guard(async () => { if (!sel.value) return; Object.assign(t, await api(`/todos/${t.id}/deps`, { method: 'POST', body: { blocked_by: Number(sel.value) } })); drawDeps(); renderTodos(); }) },
+        h('option', { value: '' }, '+ Wartet auf …'), options.map((x) => h('option', { value: x.id }, x.title.slice(0, 80))));
+      depBox.appendChild(sel);
+    }
+  };
+  drawDeps();
+  // Kommentare
+  const cBox = h('div', { class: 'col', style: 'gap:6px' });
+  const cInput = h('textarea', { maxlength: 2000, placeholder: shared ? 'Kommentar … (@name erwähnt jemanden)' : 'Kommentar oder Notiz zum Verlauf …', style: 'min-height:64px', 'aria-label': 'Kommentar' });
+  const drawComments = guard(async () => {
+    const { comments } = await api(`/todos/${t.id}/comments`); clear(cBox);
+    comments.forEach((c) => cBox.appendChild(h('div', { class: 'comment' }, h('div', { class: 'row small muted' }, h('strong', { class: 'grow', style: 'color:var(--text)' }, c.author), fmtTs(c.created_at),
+      c.mine ? h('button', { class: 'icon-btn', style: 'width:24px;height:24px', 'aria-label': 'Kommentar löschen', onclick: guard(async () => { await api('/comments/' + c.id, { method: 'DELETE' }); drawComments(); }) }, icon('x')) : null),
+      h('div', { class: 'comment-body' }, mentionText(c.body)))));
+  });
+  drawComments();
+  const cForm = h('form', { class: 'col', style: 'gap:6px', onsubmit: guard(async (e) => {
+    e.preventDefault(); const body = cInput.value.trim(); if (!body) return;
+    await api(`/todos/${t.id}/comments`, { method: 'POST', body: { body } }); cInput.value = ''; drawComments();
+  }) }, cInput, h('div', { class: 'row' }, h('div', { class: 'grow' }), h('button', { class: 'btn sm', type: 'submit' }, icon('send'), 'Senden')));
+  cInput.addEventListener('keydown', (e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) cForm.requestSubmit(); });
+  // Verlauf
+  const hBox = h('div', { class: 'history' });
+  const hist = h('details', { class: 'small', ontoggle: guard(async () => {
+    if (!hist.open) return;
+    const { history } = await api(`/todos/${t.id}/history`); clear(hBox);
+    history.forEach((x) => hBox.appendChild(h('div', {}, h('b', {}, x.actor), ' ' + (HIST[x.action] ? HIST[x.action](x.detail || {}) : x.action), h('span', { class: 'muted' }, ' · ' + fmtTs(x.at)))));
+  }) }, h('summary', { class: 'muted' }, 'Verlauf'), hBox);
+  const bottom = h('div', { class: 'col', style: 'gap:14px' },
+    h('div', { class: 'field' }, 'Wartet auf', depBox),
+    h('div', { class: 'field' }, 'Kommentare', cBox, cForm), hist);
+  return { top, bottom };
 }
 
 // ------------------------------------------------------------------ Spracheingabe (Whisper)
@@ -1834,6 +2033,18 @@ function viewAdmin(view) {
   view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Administration'), h('div', { class: 'muted small' }, 'Benutzer freigeben und verwalten'))));
   const users = h('div', { class: 'col' }), audit = h('div', { class: 'col', style: 'gap:4px' });
   view.appendChild(users);
+  const iBox = h('div', { class: 'glass card col' });
+  view.appendChild(iBox);
+  const loadInvites = guard(async () => {
+    const { invites } = await api('/admin/invites'); clear(iBox);
+    iBox.appendChild(h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Einladungen'), btn('Einladen', 'sm', () => inviteSheet(loadInvites), 'mail')));
+    iBox.appendChild(h('div', { class: 'small muted' }, 'Wer sich über einen Einladungslink registriert, ist sofort freigegeben – ohne Warten auf einen Admin.'));
+    invites.slice(0, 10).forEach((i) => iBox.appendChild(h('div', { class: 'row small' },
+      h('span', { class: 'chip dotted ' + (i.active ? 'ok' : '') }, i.active ? 'aktiv' : 'abgelaufen'),
+      h('span', { class: 'grow' }, (i.note || 'Ohne Notiz') + ` · ${i.uses}/${i.max_uses} genutzt · bis ${fmtTs(i.expires_at)}`),
+      h('button', { class: 'icon-btn', 'aria-label': 'Einladung löschen', onclick: guard(async () => { await api('/admin/invites/' + i.id, { method: 'DELETE' }); loadInvites(); }) }, icon('trash')))));
+  });
+  loadInvites();
   const bBox = h('div', { class: 'glass card col' });
   view.appendChild(bBox);
   const loadBackups = guard(async () => {
@@ -1864,6 +2075,20 @@ function viewAdmin(view) {
   });
   const loadAudit = guard(async () => { const { entries } = await api('/admin/audit'); clear(audit); entries.forEach((e) => audit.appendChild(h('div', { class: 'small row wrap' }, h('span', { class: 'muted' }, fmtTs(e.at)), h('strong', {}, e.actor), h('span', {}, e.action + (e.detail ? ' · ' + e.detail : '')), h('span', { class: 'muted' }, e.ip || '')))); });
   loadUsers();
+}
+
+function inviteSheet(onDone) {
+  const note = h('input', { type: 'text', maxlength: 80, placeholder: 'Für wen? z. B. Familie, Anna' });
+  const days = h('select', { 'aria-label': 'Gültig' }, [[1, '1 Tag'], [7, '7 Tage'], [14, '14 Tage'], [30, '30 Tage']].map(([v, l]) => h('option', { value: v, selected: v === 7 }, l)));
+  const uses = h('select', { 'aria-label': 'Nutzungen' }, [[1, 'Einmalig'], [5, 'Bis zu 5 Personen'], [20, 'Bis zu 20 Personen']].map(([v, l]) => h('option', { value: v }, l)));
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    const r = await api('/admin/invites', { method: 'POST', body: { note: note.value.trim(), days: Number(days.value), max_uses: Number(uses.value) } });
+    close(); keySheet('Einladungslink', r.url); onDone();
+  }) }, h('h2', {}, 'Einladungslink'), h('label', { class: 'field' }, 'Notiz', note),
+  h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'Gültig', days), h('label', { class: 'field' }, 'Nutzungen', uses)),
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, 'Link erzeugen'))));
+  note.focus();
 }
 
 // ------------------------------------------------------------------ Start

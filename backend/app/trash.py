@@ -17,7 +17,8 @@ log = logging.getLogger("todo.trash")
 router = APIRouter(prefix="/api/trash", tags=["trash"])
 KEEP_DAYS = 30
 # Tabellen, die an einer Aufgabe hängen und mit ihr gesichert/wiederhergestellt werden
-DEPENDENTS = [("attachments", "todo_id"), ("time_entries", "todo_id")]
+DEPENDENTS = [("attachments", "todo_id"), ("time_entries", "todo_id"), ("comments", "todo_id"), ("todo_history", "todo_id"),
+              ("todo_deps", "todo_id"), ("todo_deps", "blocked_by_id")]
 
 
 def _rows(conn: sqlite3.Connection, sql: str, args: tuple) -> list[dict]:
@@ -28,7 +29,7 @@ def snapshot(conn: sqlite3.Connection, todo: sqlite3.Row) -> dict:
     subs = _rows(conn, "SELECT * FROM todos WHERE parent_id = ? ORDER BY id", (todo["id"],))
     ids = [todo["id"]] + [s["id"] for s in subs]
     marks = ",".join("?" * len(ids))
-    deps = {table: _rows(conn, f"SELECT * FROM {table} WHERE {col} IN ({marks})", tuple(ids)) for table, col in DEPENDENTS}
+    deps = {f"{table}.{col}": _rows(conn, f"SELECT * FROM {table} WHERE {col} IN ({marks})", tuple(ids)) for table, col in DEPENDENTS}
     return {"todo": dict(todo), "subs": subs, "deps": deps}
 
 
@@ -59,7 +60,10 @@ def move(conn: sqlite3.Connection, user_id: int, todos: list[sqlite3.Row], title
 def _insert(conn: sqlite3.Connection, table: str, row: dict) -> None:
     cols = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
     row = {k: v for k, v in row.items() if k in cols}
-    conn.execute(f"INSERT OR IGNORE INTO {table} ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    try:
+        conn.execute(f"INSERT OR IGNORE INTO {table} ({', '.join(row)}) VALUES ({', '.join('?' * len(row))})", tuple(row.values()))
+    except sqlite3.IntegrityError:
+        pass  # z. B. Abhängigkeit auf eine inzwischen gelöschte Aufgabe
 
 
 def restore(conn: sqlite3.Connection, user_id: int, trash_id: int) -> int:
@@ -82,9 +86,9 @@ def restore(conn: sqlite3.Connection, user_id: int, trash_id: int) -> int:
             for s in tree["subs"]:
                 s["user_id"], s["list_id"] = t["user_id"], t["list_id"]
                 _insert(conn, "todos", s)
-            for table, _ in DEPENDENTS:
-                for r in tree["deps"].get(table, []):
-                    _insert(conn, table, r)
+            for key, rows in tree["deps"].items():
+                for r in rows:
+                    _insert(conn, key.split(".")[0], r)
             restored.append(t["id"])
         conn.execute("DELETE FROM trash WHERE id = ?", (trash_id,))
     users: set[int] = set()
@@ -103,7 +107,8 @@ def restore(conn: sqlite3.Connection, user_id: int, trash_id: int) -> int:
 
 
 def _files_of(entry_data: str) -> list[str]:
-    return [a["stored_name"] for tree in json.loads(entry_data) for a in tree["deps"].get("attachments", [])]
+    return [a["stored_name"] for tree in json.loads(entry_data) for key, rows in tree["deps"].items()
+            if key.split(".")[0] == "attachments" for a in rows]
 
 
 def _drop(conn: sqlite3.Connection, entries: list[sqlite3.Row]) -> None:

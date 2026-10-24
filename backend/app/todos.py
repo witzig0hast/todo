@@ -83,6 +83,8 @@ class TodoIn(BaseModel):
 
 class TodoPatch(BaseModel):
     title: str | None = Field(default=None, min_length=1, max_length=300)
+    stage: Literal["todo", "doing"] | None = None
+    assignee: str | None = Field(default=None, max_length=64)  # Benutzername, "" = niemand
     notes: str | None = Field(default=None, max_length=5000)
     priority: int | None = Field(default=None, ge=0, le=3)
     due_at: IsoDate = None
@@ -97,11 +99,15 @@ class TodoPatch(BaseModel):
 class ListIn(BaseModel):
     name: str = Field(min_length=1, max_length=60)
     color: Color = "#7c5cff"
+    kind: Literal["list", "project"] = "list"
+    due_at: IsoDate = None
 
 
 class ListPatch(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=60)
     color: Color | None = None
+    kind: Literal["list", "project"] | None = None
+    due_at: IsoDate = None
 
 
 class SnoozeIn(BaseModel):
@@ -145,6 +151,37 @@ def todo_out(r: sqlite3.Row) -> dict:
     return d
 
 
+# ------------------------------------------------------------------ Verlauf, Abhängigkeiten, Kommentare (Zusatzinfos)
+HISTORY_FIELDS = ("title", "due_at", "done", "list_id", "priority", "assignee_id", "stage", "notes", "recurrence")
+
+
+def actor_name(conn: sqlite3.Connection, user_id: int) -> str:
+    row = conn.execute("SELECT username FROM users WHERE id = ?", (user_id,)).fetchone()
+    return row["username"] if row else "?"
+
+
+def record(conn: sqlite3.Connection, todo_id: int, actor: str, action: str, detail: object = None) -> None:
+    conn.execute("INSERT INTO todo_history (todo_id, actor, action, detail, at) VALUES (?,?,?,?,?)",
+                 (todo_id, actor[:64], action, json.dumps(detail, ensure_ascii=False) if detail is not None else None, now()))
+
+
+def enrich(conn: sqlite3.Connection, items: list[dict]) -> list[dict]:
+    """Ergänzt blocked_by (IDs) und comment_count für eine Liste von Aufgaben (zwei Abfragen statt N)."""
+    if not items:
+        return items
+    ids = [t["id"] for t in items]
+    marks = ",".join("?" * len(ids))
+    deps: dict[int, list[int]] = {}
+    for r in conn.execute(f"SELECT todo_id, blocked_by_id FROM todo_deps WHERE todo_id IN ({marks})", ids):
+        deps.setdefault(r["todo_id"], []).append(r["blocked_by_id"])
+    counts = {r["todo_id"]: r["n"] for r in conn.execute(
+        f"SELECT todo_id, COUNT(*) AS n FROM comments WHERE todo_id IN ({marks}) GROUP BY todo_id", ids)}
+    for t in items:
+        t["blocked_by"] = deps.get(t["id"], [])
+        t["comment_count"] = counts.get(t["id"], 0)
+    return items
+
+
 # ------------------------------------------------------------------ Zugriff (eigene + geteilte Listen)
 ACCESS_SQL = ("(t.user_id = :u OR t.list_id IN (SELECT id FROM lists WHERE user_id = :u "
               "UNION SELECT list_id FROM list_members WHERE user_id = :u))")
@@ -177,6 +214,13 @@ def audience(conn: sqlite3.Connection, todo: sqlite3.Row | dict) -> set[int]:
             users.add(lst["user_id"])
         users.update(r["user_id"] for r in conn.execute("SELECT user_id FROM list_members WHERE list_id = ?", (todo["list_id"],)))
     return users
+
+
+def members_of(conn: sqlite3.Connection, todo: sqlite3.Row | dict) -> dict[str, int]:
+    """Wer eine Aufgabe zugewiesen bekommen kann: Besitzer der Aufgabe/Liste und Listenmitglieder (freigegeben)."""
+    marks = ",".join("?" * len(audience(conn, todo)))
+    return {r["username"].lower(): r["id"] for r in conn.execute(
+        f"SELECT id, username FROM users WHERE status = 'approved' AND id IN ({marks})", tuple(audience(conn, todo)))}
 
 
 def _publish(conn: sqlite3.Connection, todo: sqlite3.Row | dict, payload: dict) -> None:
@@ -235,10 +279,11 @@ def create_todo(conn: sqlite3.Connection, user_id: int, data: TodoIn, created_by
          data.location.model_dump_json() if data.location else None),
     )
     sync_reminders(conn, cur.lastrowid)
+    record(conn, cur.lastrowid, created_by if created_by != "user" else actor_name(conn, user_id), "created")
     if data.location:
         _geofences_changed(conn, user_id)
     row = conn.execute("SELECT * FROM todos WHERE id = ?", (cur.lastrowid,)).fetchone()
-    out = todo_out(row)
+    out = enrich(conn, [todo_out(row)])[0]
     _publish(conn, row, {"op": "created", "todo": out})
     return out
 
@@ -273,7 +318,21 @@ def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row, publish: bool = True
     return out
 
 
-def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dict, publish: bool = True) -> dict:
+def _notify_unblocked(conn: sqlite3.Connection, todo_id: int, actor_id: int) -> None:
+    """Aufgaben, die nur noch auf diese gewartet haben, sind jetzt frei: Zuständige(n) bzw. Besitzer benachrichtigen."""
+    from . import push
+
+    for t in conn.execute("SELECT t.* FROM todo_deps d JOIN todos t ON t.id = d.todo_id WHERE d.blocked_by_id = ? AND t.done = 0",
+                          (todo_id,)).fetchall():
+        still = conn.execute("SELECT 1 FROM todo_deps d JOIN todos b ON b.id = d.blocked_by_id WHERE d.todo_id = ? AND b.done = 0",
+                             (t["id"],)).fetchone()
+        who = t["assignee_id"] or t["user_id"]
+        if still is None and who != actor_id:
+            push.notify_threadsafe([who], "Kann losgehen", t["title"], "/#/all")
+
+
+def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dict, publish: bool = True,
+                actor: str | None = None) -> dict:
     row = get_todo(conn, user_id, todo_id)
     if "list_id" in patch:
         _check_list(conn, user_id, patch["list_id"])
@@ -296,6 +355,26 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
     if "remind_offsets" in patch:
         sets.append("remind_offsets = ?")
         vals.append(json.dumps(patch["remind_offsets"] if patch["remind_offsets"] is not None else [0]))
+    if patch.get("stage"):
+        sets.append("stage = ?")
+        vals.append(patch["stage"])
+        if row["done"] and "done" not in patch:  # auf dem Board aus „Erledigt“ zurückgezogen
+            patch["done"] = False
+    assignee_changed = False
+    if "assignee" in patch:
+        name = (patch["assignee"] or "").strip().lower()
+        if name:
+            target = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+            new_list = patch.get("list_id", row["list_id"])
+            cand = members_of(conn, {**dict(target), "list_id": new_list})
+            if name not in cand:
+                raise HTTPException(422, "Zuweisen geht nur an dich oder Mitglieder der geteilten Liste.")
+            new_assignee = cand[name]
+        else:
+            new_assignee = None
+        assignee_changed = new_assignee != row["assignee_id"]
+        sets.append("assignee_id = ?")
+        vals.append(new_assignee)
     completing = patch.get("done") is True and not row["done"]
     if "done" in patch and patch["done"] is not None:
         sets += ["done = ?", "done_at = ?"]
@@ -306,9 +385,24 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
     if {"due_at", "remind_offsets", "done"} & set(patch):
         sync_reminders(conn, todo_id)
     updated = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    actor = actor or actor_name(conn, user_id)
+    for f in HISTORY_FIELDS:
+        if row[f] != updated[f]:
+            if f == "notes":
+                record(conn, todo_id, actor, "notes")
+            elif f == "assignee_id":
+                record(conn, todo_id, actor, "assignee", {"to": actor_name(conn, updated[f]) if updated[f] else None})
+            else:
+                record(conn, todo_id, actor, f, {"from": row[f], "to": updated[f]})
+    if assignee_changed and updated["assignee_id"] and updated["assignee_id"] != user_id:
+        from . import push
+
+        push.notify_threadsafe([updated["assignee_id"]], "Neue Aufgabe für dich", f"{actor}: {updated['title']}", "/#/assigned")
+    if completing:
+        _notify_unblocked(conn, todo_id, user_id)
     if "location" in patch or (row["location"] and ("done" in patch or "title" in patch)):
         _geofences_changed(conn, user_id)
-    out = todo_out(updated)
+    out = enrich(conn, [todo_out(updated)])[0]
     if publish:
         _publish(conn, updated, {"op": "updated", "todo": out})
         if row["list_id"] != updated["list_id"]:
@@ -337,7 +431,7 @@ def list_todos(conn: sqlite3.Connection, user_id: int, done: bool | None = None,
         args["tag"] = f"%,{normalize_tags([tag])[0]},%"
     sql += " ORDER BY t.done, COALESCE(t.due_at, '9999'), t.priority DESC, t.id LIMIT :limit"
     args["limit"] = limit
-    return [todo_out(r) for r in conn.execute(sql, args)]
+    return enrich(conn, [todo_out(r) for r in conn.execute(sql, args)])
 
 
 # ------------------------------------------------------------------ Endpunkte
@@ -515,7 +609,7 @@ def api_lists(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends
                                                          "WHERE m.list_id = ? ORDER BY u.username", (r["id"],))]
         mine = r["user_id"] == auth.id
         out.append({"id": r["id"], "name": r["name"], "color": r["color"], "created_at": r["created_at"],
-                    "owner": r["owner"], "mine": mine, "members": members})
+                    "owner": r["owner"], "mine": mine, "members": members, "kind": r["kind"], "due_at": r["due_at"]})
     return {"lists": out}
 
 
@@ -561,20 +655,26 @@ def api_remove_member(list_id: int, username: str, auth: Auth = Depends(get_auth
 
 @router.post("/lists", status_code=201)
 def api_create_list(data: ListIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    cur = conn.execute("INSERT INTO lists (user_id, name, color, created_at) VALUES (?,?,?,?)",
-                       (auth.id, data.name.strip(), data.color, now()))
-    return {"id": cur.lastrowid, "name": data.name.strip(), "color": data.color}
+    cur = conn.execute("INSERT INTO lists (user_id, name, color, created_at, kind, due_at) VALUES (?,?,?,?,?,?)",
+                       (auth.id, data.name.strip(), data.color, now(), data.kind, data.due_at))
+    return {"id": cur.lastrowid, "name": data.name.strip(), "color": data.color, "kind": data.kind, "due_at": data.due_at,
+            "owner": auth.user["username"], "mine": True, "members": []}
 
 
 @router.patch("/lists/{list_id}")
 def api_patch_list(list_id: int, data: ListPatch, auth: Auth = Depends(get_auth),
                    conn: sqlite3.Connection = Depends(get_db)):
-    patch = data.model_dump(exclude_none=True)
+    patch = data.model_dump(exclude_unset=True)
+    for k in ("name", "color", "kind"):
+        if k in patch and patch[k] is None:
+            patch.pop(k)
     _own_list(conn, auth.id, list_id)
     if patch:
         sets = ", ".join(f"{k} = ?" for k in patch)
         conn.execute(f"UPDATE lists SET {sets} WHERE id = ?", (*patch.values(), list_id))
-    return dict(conn.execute("SELECT id, name, color FROM lists WHERE id = ?", (list_id,)).fetchone())
+    for uid in {r["user_id"] for r in conn.execute("SELECT user_id FROM list_members WHERE list_id = ?", (list_id,))}:
+        events.publish("user", uid, "todo", {"op": "reload"})
+    return dict(conn.execute("SELECT id, name, color, kind, due_at FROM lists WHERE id = ?", (list_id,)).fetchone())
 
 
 @router.delete("/lists/{list_id}", status_code=204)
