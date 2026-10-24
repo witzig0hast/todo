@@ -221,6 +221,32 @@ CREATE TABLE IF NOT EXISTS webauthn_challenges (
   challenge TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS trash (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,  -- wer gelöscht hat
+  title TEXT NOT NULL,
+  count INTEGER NOT NULL,
+  data TEXT NOT NULL,             -- JSON-Schnappschuss (Aufgaben, Unteraufgaben, abhängige Zeilen)
+  deleted_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_trash_user ON trash(user_id, id DESC);
+CREATE TABLE IF NOT EXISTS time_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  todo_id INTEGER NOT NULL REFERENCES todos(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  started_at TEXT NOT NULL,
+  minutes INTEGER NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_time_user ON time_entries(user_id, started_at);
+CREATE TABLE IF NOT EXISTS templates (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  data TEXT NOT NULL,             -- JSON, siehe templates.TemplateIn
+  created_at TEXT NOT NULL,
+  used_count INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -261,6 +287,9 @@ COLUMNS = [
     ("users", "totp_last_step", "INTEGER NOT NULL DEFAULT 0"),  # Schutz gegen Wiederverwendung eines Codes
     ("sessions", "last_seen_at", "TEXT"),
     ("sessions", "ip", "TEXT"),
+    ("todos", "tracked_min", "INTEGER NOT NULL DEFAULT 0"),    # Fokus-Timer: erfasste Minuten
+    ("user_settings", "review_enabled", "INTEGER NOT NULL DEFAULT 0"),  # Wochenrückblick (So 18 Uhr)
+    ("user_settings", "review_sent_on", "TEXT"),
 ]
 
 

@@ -1,5 +1,5 @@
 // Service Worker: App-Shell-Cache (Offline-Start) + Web-Push. API-Antworten werden nie gecacht.
-const CACHE = 'todo-shell-v4';
+const CACHE = 'todo-shell-v5';
 const SHELL = ['/', '/app.css', '/app.js', '/manifest.webmanifest', '/icons/icon.svg'];
 
 self.addEventListener('install', (e) => {

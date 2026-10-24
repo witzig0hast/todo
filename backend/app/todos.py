@@ -9,7 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AfterValidator, BaseModel, Field, field_validator
 
 from . import events
-from .db import get_db, now
+from .db import get_db, now, tx
 from .recurrence import FMT, Recurrence, describe, next_due, parse_utc, user_tz
 from .security import Auth, get_auth
 
@@ -249,7 +249,7 @@ def _geofences_changed(conn: sqlite3.Connection, user_id: int) -> None:
     notify_geofences_changed(conn, user_id)
 
 
-def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row) -> dict | None:
+def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row, publish: bool = True) -> dict | None:
     """Wiederkehrende Aufgabe erledigt -> nächste Instanz (inkl. Unteraufgaben, offen) anlegen."""
     if not row["recurrence"] or row["parent_id"] is not None:
         return None
@@ -268,11 +268,12 @@ def _spawn_next(conn: sqlite3.Connection, row: sqlite3.Row) -> dict | None:
                      (s["user_id"], s["list_id"], new_id, s["title"], s["notes"], s["priority"], s["created_by"], ts, ts))
     sync_reminders(conn, new_id)
     out = todo_out(conn.execute("SELECT * FROM todos WHERE id = ?", (new_id,)).fetchone())
-    _publish(conn, row, {"op": "reload"})  # inkl. Unteraufgaben
+    if publish:
+        _publish(conn, row, {"op": "reload"})  # inkl. Unteraufgaben
     return out
 
 
-def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dict) -> dict:
+def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dict, publish: bool = True) -> dict:
     row = get_todo(conn, user_id, todo_id)
     if "list_id" in patch:
         _check_list(conn, user_id, patch["list_id"])
@@ -308,11 +309,12 @@ def update_todo(conn: sqlite3.Connection, user_id: int, todo_id: int, patch: dic
     if "location" in patch or (row["location"] and ("done" in patch or "title" in patch)):
         _geofences_changed(conn, user_id)
     out = todo_out(updated)
-    _publish(conn, updated, {"op": "updated", "todo": out})
-    if row["list_id"] != updated["list_id"]:
-        _publish(conn, row, {"op": "reload"})  # aus geteilter Liste verschoben
+    if publish:
+        _publish(conn, updated, {"op": "updated", "todo": out})
+        if row["list_id"] != updated["list_id"]:
+            _publish(conn, row, {"op": "reload"})  # aus geteilter Liste verschoben
     if completing:
-        nxt = _spawn_next(conn, updated)
+        nxt = _spawn_next(conn, updated, publish)
         if nxt:
             out["next"] = nxt
     return out
@@ -365,26 +367,133 @@ def api_snooze(todo_id: int, data: SnoozeIn, auth: Auth = Depends(get_auth), con
     return snooze(conn, auth.id, todo_id, data.minutes)
 
 
-@router.delete("/todos/{todo_id}", status_code=204)
+@router.delete("/todos/{todo_id}")
 def api_delete_todo(todo_id: int, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    """Verschiebt die Aufgabe (samt Unteraufgaben, Anhängen) in den Papierkorb - mit Rückgängig."""
+    from . import trash
+
     row = get_todo(conn, auth.id, todo_id)
-    users = audience(conn, row)
-    for a in conn.execute("SELECT stored_name FROM attachments WHERE todo_id = ? OR todo_id IN "
-                          "(SELECT id FROM todos WHERE parent_id = ?)", (todo_id, todo_id)).fetchall():
-        from .attachments import remove_file
-
-        remove_file(a["stored_name"])
-    conn.execute("DELETE FROM todos WHERE id = ?", (todo_id,))
-    if row["location"]:
-        _geofences_changed(conn, row["user_id"])
-    for uid in users:
-        events.publish("user", uid, "todo", {"op": "deleted", "id": todo_id})
+    return {"trash_id": trash.move(conn, auth.id, [row], row["title"])}
 
 
-@router.post("/todos/clear-done", status_code=204)
+@router.post("/todos/clear-done")
 def api_clear_done(auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
-    conn.execute("DELETE FROM todos WHERE user_id = ? AND done = 1 AND parent_id IS NULL", (auth.id,))
-    events.publish("user", auth.id, "todo", {"op": "reload"})
+    from . import trash
+
+    rows = conn.execute("SELECT * FROM todos WHERE user_id = ? AND done = 1 AND parent_id IS NULL", (auth.id,)).fetchall()
+    if not rows:
+        return {"trash_id": None, "count": 0}
+    return {"trash_id": trash.move(conn, auth.id, rows, f"{len(rows)} erledigte Aufgabe{'n' if len(rows) != 1 else ''}"),
+            "count": len(rows)}
+
+
+# ------------------------------------------------------------------ Sammelaktionen (Mehrfachauswahl)
+class BulkIn(BaseModel):
+    ids: list[int] = Field(min_length=1, max_length=500)
+    action: Literal["done", "undone", "delete", "move", "tag", "untag", "due", "priority"]
+    list_id: int | None = None
+    tags: Tags = None
+    due_at: IsoDate = None
+    priority: int | None = Field(default=None, ge=0, le=3)
+
+
+@router.post("/todos/bulk")
+def api_bulk(data: BulkIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    rows = []
+    for tid in dict.fromkeys(data.ids):
+        try:
+            rows.append(get_todo(conn, auth.id, tid))
+        except HTTPException:
+            continue  # nicht (mehr) zugänglich: überspringen
+    if not rows:
+        raise HTTPException(404, "Keine der Aufgaben gefunden.")
+    if data.action == "delete":
+        from . import trash
+
+        tops = [r for r in rows if r["parent_id"] is None or r["parent_id"] not in {x["id"] for x in rows}]
+        title = tops[0]["title"] if len(tops) == 1 else f"{len(tops)} Aufgaben"
+        return {"count": len(tops), "trash_id": trash.move(conn, auth.id, tops, title)}
+    if data.action == "move":
+        _check_list(conn, auth.id, data.list_id)
+    users: set[int] = set()
+    with tx(conn):
+        for r in rows:
+            users |= audience(conn, r)
+            if data.action in ("done", "undone"):
+                patch = {"done": data.action == "done"}
+            elif data.action == "move":
+                patch = {"list_id": data.list_id}
+            elif data.action in ("tag", "untag"):
+                cur = [t for t in (r["tags"] or "").split(",") if t]
+                new = data.tags or []
+                tags = [t for t in cur if t not in new] if data.action == "untag" else list(dict.fromkeys(cur + new))
+                patch = {"tags": tags[:MAX_TAGS]}
+            elif data.action == "due":
+                patch = {"due_at": data.due_at}
+            else:
+                patch = {"priority": data.priority if data.priority is not None else 0}
+            updated = update_todo(conn, auth.id, r["id"], patch, publish=False)
+            users |= audience(conn, conn.execute("SELECT * FROM todos WHERE id = ?", (updated["id"],)).fetchone())
+    for uid in users:
+        events.publish("user", uid, "todo", {"op": "reload"})
+    return {"count": len(rows)}
+
+
+# ------------------------------------------------------------------ Schnelleingabe (ohne KI)
+class QuickIn(BaseModel):
+    text: str = Field(min_length=1, max_length=300)
+    list_id: int | None = None
+    tags: Tags = None
+    raw: bool = False  # Erkennung aus: Text 1:1 als Titel
+
+
+def _quick(conn: sqlite3.Connection, user_id: int, data: QuickIn) -> dict:
+    from . import quickparse
+
+    if data.raw:
+        return {"title": data.text.strip(), "due_at": None, "priority": 0, "tags": [], "list_id": None,
+                "recurrence": None, "recurrence_text": None}
+    lists = {r["id"]: r["name"] for r in conn.execute(
+        "SELECT id, name FROM lists WHERE user_id = :u OR id IN (SELECT list_id FROM list_members WHERE user_id = :u)",
+        {"u": user_id})}
+    return quickparse.parse(data.text, datetime.now(timezone.utc).astimezone(user_tz(conn, user_id)), lists)
+
+
+@router.post("/quick/parse")
+def api_quick_parse(data: QuickIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    return _quick(conn, auth.id, data)
+
+
+@router.post("/todos/quick", status_code=201)
+def api_quick_create(data: QuickIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    p = _quick(conn, auth.id, data)
+    tags = list(dict.fromkeys(p["tags"] + (data.tags or [])))[:MAX_TAGS]
+    try:
+        todo = TodoIn(title=p["title"][:300], due_at=p["due_at"], priority=p["priority"], tags=tags,
+                      list_id=p["list_id"] if p["list_id"] is not None else data.list_id,
+                      recurrence=Recurrence(**p["recurrence"]) if p["recurrence"] else None)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return create_todo(conn, auth.id, todo)
+
+
+# ------------------------------------------------------------------ Zeiterfassung (Fokus-Timer)
+class TimeIn(BaseModel):
+    minutes: int = Field(ge=1, le=600)
+    started_at: IsoDate = None
+
+
+@router.post("/todos/{todo_id}/time")
+def api_track_time(todo_id: int, data: TimeIn, auth: Auth = Depends(get_auth), conn: sqlite3.Connection = Depends(get_db)):
+    get_todo(conn, auth.id, todo_id)
+    ts = now()
+    conn.execute("INSERT INTO time_entries (todo_id, user_id, started_at, minutes, created_at) VALUES (?,?,?,?,?)",
+                 (todo_id, auth.id, data.started_at or ts, data.minutes, ts))
+    conn.execute("UPDATE todos SET tracked_min = tracked_min + ? WHERE id = ?", (data.minutes, todo_id))
+    row = conn.execute("SELECT * FROM todos WHERE id = ?", (todo_id,)).fetchone()
+    out = todo_out(row)
+    _publish(conn, row, {"op": "updated", "todo": out})
+    return out
 
 
 @router.get("/tags")

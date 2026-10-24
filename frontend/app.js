@@ -24,7 +24,10 @@ const ICONS = {
   link: '<path d="M10 14a5 5 0 007 0l3-3a5 5 0 00-7-7l-1 1"/><path d="M14 10a5 5 0 00-7 0l-3 3a5 5 0 007 7l1-1"/>', bolt: '<path d="M13 2L4 14h7l-1 8 9-12h-7z"/>',
   moon: '<path d="M21 12.8A9 9 0 1111.2 3a7 7 0 009.8 9.8z"/>', pin: '<path d="M12 22s7-6.2 7-12a7 7 0 10-14 0c0 5.8 7 12 7 12z"/><circle cx="12" cy="10" r="2.5"/>', lock: '<rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>', share: '<circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/>',
   search: '<circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/>', tag: '<path d="M3 12V4a1 1 0 011-1h8l9 9-9 9z"/><path d="M7.5 7.5h.01"/>', repeat: '<path d="M17 2l4 4-4 4"/><path d="M3 11V9a3 3 0 013-3h15M7 22l-4-4 4-4"/><path d="M21 13v2a3 3 0 01-3 3H3"/>', filter: '<path d="M3 5h18l-7 8v6l-4 2v-8z"/>',
-  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
+  user: '<circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/>', chart: '<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',
+  undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h11a5 5 0 010 10h-3"/>', play: '<path d="M7 4l13 8-13 8z"/>', pause: '<path d="M8 4v16M16 4v16"/>',
+  stop: '<rect x="5" y="5" width="14" height="14" rx="2"/>', select: '<rect x="3" y="3" width="18" height="18" rx="4"/><path d="M8 12l3 3 5-6"/>',
+  layers: '<path d="M12 3l9 5-9 5-9-5z"/><path d="M3 13l9 5 9-5"/>', timer: '<circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2M9 2h6"/>', refresh: '<path d="M3 12a9 9 0 0115-6.7L21 8M21 3v5h-5M21 12a9 9 0 01-15 6.7L3 16M3 21v-5h5"/>',
 };
 function icon(name, cls) {
   const s = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
@@ -57,11 +60,18 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const clear = (el) => { while (el.firstChild) el.removeChild(el.firstChild); return el; };
 const btn = (label, cls, onclick, ic) => h('button', { class: 'btn ' + (cls || ''), onclick, type: 'button' }, ic ? icon(ic) : null, label);
 
-function toast(msg, kind) {
-  const t = h('div', { class: 'toast ' + (kind || ''), role: 'status' }, msg);
-  $('#toasts').appendChild(t);
-  setTimeout(() => t.remove(), 4200);
+// Hinweise: höchstens 3 gleichzeitig, gleiche Meldung ersetzt die alte; optional mit Aktion (z. B. „Rückgängig“)
+function toast(msg, kind, action) {
+  const box = $('#toasts'); if (!box) return;
+  [...box.children].forEach((x) => { if (x.dataset.msg === msg) x.remove(); });
+  while (box.children.length >= 3) box.firstChild.remove();
+  const t = h('div', { class: 'toast ' + (kind || ''), role: 'status' }, h('span', {}, msg),
+    action ? h('button', { type: 'button', class: 'toast-act', onclick: () => { t.remove(); action.fn(); } }, action.label) : null);
+  t.dataset.msg = msg;
+  box.appendChild(t);
+  setTimeout(() => t.remove(), action ? 8000 : 4200);
 }
+const clearToasts = () => { const box = $('#toasts'); if (box) clear(box); };
 
 // ------------------------------------------------------------------ API
 const state = {
@@ -111,6 +121,8 @@ const aiCtx = () => { const n = new Date(); return { now_local: toLocalInput(n.t
 // ------------------------------------------------------------------ Start / Anmeldung
 async function boot() {
   const root = clear($('#root'));
+  clearToasts(); stopSelecting(false);
+  const fb = $('#focusbar'); if (fb) fb.remove();
   try {
     const me = await api('/auth/me', { noAuthRedirect: true });
     state.user = me.user; state.csrf = me.csrf;
@@ -131,6 +143,7 @@ async function boot() {
   }
   await loadAll();
   renderApp(root);
+  renderFocus();
   openStream();
   loadPendingCount();
   initAndroid();
@@ -326,6 +339,7 @@ function go(r) { location.hash = '#/' + r; }
 function currentRoute() { return (location.hash.replace(/^#\/?/, '').split('?')[0]) || 'today'; }
 
 function route() {
+  if (state.selecting) stopSelecting(false);
   state.route = currentRoute();
   if (state.route === 'bus') state.unread = 0;
   state.selected = null;
@@ -333,8 +347,10 @@ function route() {
   const r = state.route;
   if (r === 'calendar') viewCalendar(view);
   else if (isTaskRoute(r)) viewTasks(view);
-  else if (r === 'calendar') viewCalendar(view);
   else if (r === 'share') viewShare(view);
+  else if (r === 'stats') viewStats(view);
+  else if (r === 'templates') viewTemplates(view);
+  else if (r === 'trash') viewTrash(view);
   else if (r === 'bus') viewBus(view);
   else if (r === 'assistant') viewAssistant(view);
   else if (r === 'settings') viewSettings(view);
@@ -354,6 +370,7 @@ function renderChrome() {
   side.appendChild(item('search', 'Suche', 'search', h('span', { class: 'count' }, '/')));
   NAV.forEach((n) => side.appendChild(item(n.id, n.label, n.icon, h('span', { class: 'count' }, n.id === 'done' ? '' : c[n.id] || ''))));
   side.appendChild(item('calendar', 'Kalender', 'cal'));
+  side.appendChild(item('stats', 'Statistik', 'chart'));
   side.appendChild(h('div', { class: 'nav-sep' }));
   side.appendChild(h('div', { class: 'nav-title' }, 'Listen', h('button', { class: 'icon-btn', style: 'width:28px;height:28px', 'aria-label': 'Neue Liste', onclick: newList }, icon('plus'))));
   state.lists.forEach((l) => {
@@ -376,6 +393,8 @@ function renderChrome() {
   side.appendChild(item('assistant', 'Assistent', 'bot'));
   if (state.user.role === 'admin') side.appendChild(item('admin', 'Admin', 'shield', state.pendingUsers ? h('span', { class: 'count chip solid' }, state.pendingUsers) : null));
   side.appendChild(h('div', { class: 'grow' }));
+  side.appendChild(item('templates', 'Vorlagen', 'layers'));
+  side.appendChild(item('trash', 'Papierkorb', 'trash'));
   side.appendChild(item('settings', 'Einstellungen', 'gear'));
   side.appendChild(h('div', { class: 'muted small', style: 'padding:6px 12px' }, `${state.user.username} · ${state.user.role === 'admin' ? 'Admin' : 'Benutzer'}`));
 
@@ -385,7 +404,7 @@ function renderChrome() {
   tabs.appendChild(tab('today', 'Aufgaben', 'check', c.today, taskRoute));
   tabs.appendChild(tab('bus', 'Bus', 'bus', state.unread, state.route === 'bus'));
   tabs.appendChild(tab('assistant', 'Assistent', 'bot', 0, state.route === 'assistant'));
-  const more = state.route === 'settings' || state.route === 'admin';
+  const more = ['settings', 'admin', 'stats', 'templates', 'trash'].includes(state.route);
   tabs.appendChild(tab('settings', 'Mehr', 'gear', state.pendingUsers, more));
 }
 
@@ -444,6 +463,7 @@ function viewTasks(view) {
     view.appendChild(h('div', { class: 'page-head' },
       h('div', {}, h('h1', {}, f ? f.name : '#' + routeTag()), h('div', { class: 'muted small' }, f ? describeQuery(f.query) : 'Alle offenen Aufgaben mit diesem Tag')),
       f ? h('button', { class: 'icon-btn', 'aria-label': 'Filter löschen', onclick: guard(async () => { if (!confirm(`Filter „${f.name}“ löschen?`)) return; await api('/filters/' + f.id, { method: 'DELETE' }); state.filters = state.filters.filter((x) => x.id !== f.id); go('today'); }) }, icon('trash')) : null));
+    addHeadTools(view);
     if (!f) view.appendChild(quickBar());
     view.appendChild(h('div', { id: 'draft' }));
     view.appendChild(h('div', { id: 'progress' }));
@@ -462,7 +482,13 @@ function viewTasks(view) {
       list.mine === false ? null : h('button', { class: 'icon-btn', 'aria-label': 'Liste löschen', onclick: guard(async () => { if (!confirm(`Liste „${list.name}“ löschen? Aufgaben bleiben erhalten.`)) return; await api('/lists/' + list.id, { method: 'DELETE' }); state.lists = state.lists.filter((x) => x.id !== list.id); state.todos.forEach((t) => { if (t.list_id === list.id) t.list_id = null; }); go('today'); }) }, icon('trash'))) : null,
     !list && r !== 'done' ? h('div', { class: 'row search-btn', style: 'gap:0' }, h('button', { class: 'icon-btn', 'aria-label': 'Kalender', onclick: () => go('calendar') }, icon('cal')),
       h('button', { class: 'icon-btn', 'aria-label': 'Suchen', onclick: () => go('search') }, icon('search'))) : null,
-    r === 'done' ? btn('Aufräumen', 'sm danger', guard(async () => { if (!confirm('Alle erledigten Aufgaben löschen?')) return; await api('/todos/clear-done', { method: 'POST' }); }), 'trash') : null));
+    r === 'done' ? btn('Aufräumen', 'sm danger', guard(async () => {
+      if (!confirm('Alle erledigten Aufgaben in den Papierkorb verschieben?')) return;
+      const x = await api('/todos/clear-done', { method: 'POST' });
+      state.todos = (await api('/todos')).todos; renderTodos(); renderChrome();
+      if (x.count) undoToast(`${x.count} erledigte Aufgabe${x.count === 1 ? '' : 'n'} im Papierkorb`, x.trash_id);
+    }), 'trash') : null));
+  addHeadTools(view);
   if (r !== 'done') view.appendChild(quickBar());
   view.appendChild(h('div', { id: 'draft' }));
   view.appendChild(h('div', { id: 'progress' }));
@@ -607,21 +633,43 @@ function viewSearch(view) {
   setTimeout(() => input.focus(), 30);
 }
 
+// Schnelleingabe: „morgen 15 Uhr Zahnarzt #privat !!“ – der Server erkennt Datum, Priorität, @Liste, Wiederholung (ohne KI)
 function quickBar() {
-  const input = h('input', { type: 'text', id: 'quick-input', placeholder: 'Neue Aufgabe oder einfach sprechen …', maxlength: 300, autocomplete: 'off', enterkeyhint: 'done' });
+  const input = h('input', { type: 'text', id: 'quick-input', placeholder: 'Neue Aufgabe, z. B. „morgen 15 Uhr Zahnarzt #privat !!“', maxlength: 300, autocomplete: 'off', enterkeyhint: 'done' });
+  const preview = h('div', { class: 'quick-preview hidden', 'aria-live': 'polite' });
+  let raw = false, seq = 0, timer = null;
+  const drawPreview = (p) => {
+    clear(preview);
+    const list = p && p.list_id ? state.lists.find((l) => l.id === p.list_id) : null;
+    const parts = p ? [p.due_at ? h('span', { class: 'chip' }, icon('clock'), fmtDue(p.due_at)) : null,
+      p.recurrence_text ? h('span', { class: 'chip' }, icon('repeat'), p.recurrence_text) : null,
+      p.priority ? h('span', { class: 'chip' + (p.priority === 3 ? ' danger' : '') }, icon('flag'), ['', 'Niedrig', 'Mittel', 'Hoch'][p.priority]) : null,
+      list ? h('span', { class: 'chip' }, icon('list'), list.name) : null, (p.tags || []).map((g) => h('span', { class: 'chip' }, '#' + g))].flat().filter(Boolean) : [];
+    if (raw) preview.append(h('span', { class: 'small muted' }, 'Wird genau so gespeichert, ohne Erkennung.'), h('button', { type: 'button', class: 'link-btn', onclick: () => { raw = false; refresh(); } }, 'Erkennung an'));
+    else if (parts.length) preview.append(h('span', { class: 'small muted' }, '„' + p.title + '“'), ...parts, h('button', { type: 'button', class: 'link-btn', onclick: () => { raw = true; drawPreview(null); } }, 'Nur Text'));
+    preview.classList.toggle('hidden', !raw && !parts.length);
+  };
+  const refresh = () => {
+    clearTimeout(timer);
+    const v = input.value.trim(), my = ++seq;
+    if (!v || raw) { drawPreview(null); return; }
+    timer = setTimeout(async () => { try { const p = await api('/quick/parse', { method: 'POST', body: { text: v } }); if (my === seq) drawPreview(p); } catch (_) { /* Vorschau ist optional */ } }, 160);
+  };
+  input.addEventListener('input', () => { if (!input.value.trim()) raw = false; refresh(); });
   const bar = h('form', { class: 'quick glass', onsubmit: guard(async (e) => {
     e.preventDefault();
-    const { title, tags } = splitTags(input.value);
-    if (!title) return;
-    if (routeTag() && !tags.includes(routeTag())) tags.push(routeTag());
-    const t = await api('/todos', { method: 'POST', body: { title, list_id: currentListId(), tags } });
-    state.todos.push(t); input.value = ''; renderTodos(); renderChrome();
+    const text = input.value.trim();
+    if (!text) return;
+    const t = await api('/todos/quick', { method: 'POST', body: { text, raw, list_id: currentListId(), tags: routeTag() ? [routeTag()] : [] } });
+    if (!state.todos.some((x) => x.id === t.id)) state.todos.push(t);
+    input.value = ''; raw = false; seq++; drawPreview(null); renderTodos(); renderChrome();
+    if (!filteredTodos().some((x) => x.id === t.id)) toast(`„${t.title}“ gespeichert` + (t.due_at ? ' – ' + fmtDue(t.due_at) : ''), 'ok');
   }) },
   input,
   h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Mit KI auswerten', title: 'Mit KI auswerten', onclick: () => aiDraft(input.value.trim(), input) }, icon('spark')),
   h('button', { class: 'icon-btn mic', type: 'button', id: 'mic', 'aria-label': 'Spracheingabe', title: 'Spracheingabe', onclick: () => toggleRecord(input, bar) }, icon('mic')),
   h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Hinzufügen' }, icon('plus')));
-  return bar;
+  return h('div', { class: 'col', style: 'gap:6px' }, bar, preview);
 }
 const TAG_RE = /(^|\s)#([\wäöüßÄÖÜ-]{1,30})/g;
 function splitTags(text) {
@@ -702,6 +750,7 @@ function prioSeg(initial, onChange) {
 }
 
 function renderTodos() {
+  renderBulk();
   const box = $('#todos'); if (!box) return;
   clear(box);
   const items = filteredTodos();
@@ -742,9 +791,11 @@ function todoRow(t) {
   const subs = state.todos.filter((s) => s.parent_id === t.id);
   const list = state.lists.find((l) => l.id === t.list_id);
   const overdue = !t.done && t.due_at && new Date(t.due_at) < new Date();
-  const row = h('div', { class: 'todo' + (t.done ? ' done' : '') + (state.selected === t.id ? ' sel' : ''), 'data-id': t.id },
-    h('button', { class: 'check p' + t.priority, type: 'button', role: 'checkbox', 'aria-checked': String(t.done), 'aria-label': t.done ? 'Als offen markieren' : 'Erledigen', onclick: (e) => { e.stopPropagation(); toggleDone(t); } }, icon('check')),
-    h('div', { class: 't-body', onclick: () => select(t.id) },
+  const picking = state.selecting, picked = picking && state.picked.has(t.id);
+  const row = h('div', { class: 'todo' + (t.done ? ' done' : '') + (state.selected === t.id ? ' sel' : '') + (picked ? ' picked' : ''), 'data-id': t.id },
+    picking ? h('button', { class: 'check pick', type: 'button', role: 'checkbox', 'aria-checked': String(picked), 'aria-label': 'Auswählen', onclick: (e) => { e.stopPropagation(); togglePick(t.id); } }, icon('check'))
+      : h('button', { class: 'check p' + t.priority, type: 'button', role: 'checkbox', 'aria-checked': String(t.done), 'aria-label': t.done ? 'Als offen markieren' : 'Erledigen', onclick: (e) => { e.stopPropagation(); toggleDone(t); } }, icon('check')),
+    h('div', { class: 't-body', onclick: () => { if (row.dataset.lp) { delete row.dataset.lp; return; } if (state.selecting) togglePick(t.id); else select(t.id); } },
       h('div', { class: 't-title' }, t.title),
       h('div', { class: 't-meta' },
         t.due_at ? h('span', { class: 'chip' + (overdue ? ' danger' : '') }, icon('clock'), fmtDue(t.due_at)) : null,
@@ -753,6 +804,7 @@ function todoRow(t) {
         t.priority > 0 ? h('span', { class: 'chip' + (t.priority === 3 ? ' danger' : '') }, icon('flag'), ['', 'Niedrig', 'Mittel', 'Hoch'][t.priority]) : null,
         t.location ? h('span', { class: 'chip' }, icon('pin'), t.location.name || 'Ort') : null,
         t.recurrence_text ? h('span', { class: 'chip', title: t.recurrence_text }, icon('repeat'), t.recurrence_text.replace(' (ab Erledigung)', '')) : null,
+        t.tracked_min ? h('span', { class: 'chip', title: 'Erfasste Fokuszeit' }, icon('timer'), fmtMin(t.tracked_min)) : null,
         (t.tags || []).map((g) => h('button', { type: 'button', class: 'chip tag', onclick: (e) => { e.stopPropagation(); go('tag/' + encodeURIComponent(g)); } }, '#' + g)),
         t.created_by !== 'user' ? h('span', { class: 'chip' }, icon('bus'), t.created_by) : null)));
   const wrap = h('div', { class: 'todo-wrap' },
@@ -762,9 +814,20 @@ function todoRow(t) {
 }
 
 function attachSwipe(row, t) {
-  let x0 = null, y0 = 0, dx = 0, locked = false;
-  row.addEventListener('pointerdown', (e) => { if (e.pointerType === 'mouse') return; x0 = e.clientX; y0 = e.clientY; dx = 0; locked = false; });
+  let x0 = null, y0 = 0, dx = 0, locked = false, lp = null;
+  const cancelLp = () => { clearTimeout(lp); lp = null; };
+  // Langes Drücken: Mehrfachauswahl starten
+  row.addEventListener('pointerdown', (e) => {
+    if (e.target.closest('button')) return;
+    cancelLp();
+    lp = setTimeout(() => { lp = null; x0 = null; row.dataset.lp = '1'; if (navigator.vibrate) navigator.vibrate(15); if (state.selecting) togglePick(t.id); else startSelecting(t.id); }, 520);
+    if (e.pointerType === 'mouse' || state.selecting) return;
+    x0 = e.clientX; y0 = e.clientY; dx = 0; locked = false;
+  });
+  row.addEventListener('pointerup', cancelLp); row.addEventListener('pointercancel', cancelLp); row.addEventListener('pointerleave', cancelLp);
+  row.addEventListener('contextmenu', (e) => { if (row.dataset.lp) e.preventDefault(); });
   row.addEventListener('pointermove', (e) => {
+    if (lp && Math.hypot(e.movementX, e.movementY) > 2) cancelLp();
     if (x0 === null) return;
     dx = e.clientX - x0;
     if (!locked && Math.abs(e.clientY - y0) > 14 && Math.abs(dx) < 14) { x0 = null; return; }
@@ -786,11 +849,18 @@ const toggleDone = guard(async (t) => {
   renderTodos(); renderChrome(); renderDetail();
 });
 const deleteTodo = guard(async (t) => {
-  await api('/todos/' + t.id, { method: 'DELETE' });
+  const r = await api('/todos/' + t.id, { method: 'DELETE' });
   state.todos = state.todos.filter((x) => x.id !== t.id && x.parent_id !== t.id);
   if (state.selected === t.id) state.selected = null;
-  renderTodos(); renderChrome(); renderDetail(); toast('Aufgabe gelöscht');
+  renderTodos(); renderChrome(); renderDetail(); undoToast('Aufgabe gelöscht', r.trash_id);
 });
+const restoreTrash = guard(async (id) => {
+  const r = await api(`/trash/${id}/restore`, { method: 'POST' });
+  state.todos = (await api('/todos')).todos;
+  if (state.route === 'trash') route(); else { renderTodos(); renderChrome(); }
+  toast(r.restored === 1 ? 'Wiederhergestellt' : `${r.restored} Aufgaben wiederhergestellt`, 'ok');
+});
+const undoToast = (msg, trashId) => toast(msg, '', trashId ? { label: 'Rückgängig', fn: () => restoreTrash(trashId) } : null);
 
 // ------------------------------------------------------------------ Detail (Sheet auf Mobil, Seitenleiste am PC)
 const wide = () => window.matchMedia('(min-width: 1280px)').matches;
@@ -799,7 +869,7 @@ function renderDetail() {
   const app = $('#app'), pane = clear($('#detail-pane'));
   document.querySelectorAll('.overlay.detail').forEach((o) => o.remove());
   const t = state.todos.find((x) => x.id === state.selected);
-  const show = !!t && !['bus', 'assistant', 'settings', 'admin'].includes(state.route);
+  const show = !!t && !state.selecting && !['bus', 'assistant', 'settings', 'admin', 'stats', 'templates', 'trash'].includes(state.route);
   app.classList.toggle('has-detail', show && wide());
   if (!show) return;
   const body = detailBody(t);
@@ -922,8 +992,282 @@ function detailBody(t) {
     !t.done ? h('div', { class: 'field' }, 'Erinnere mich', h('div', { class: 'row wrap' }, snoozeBtn('in 10 Min.', 10), snoozeBtn('in 1 Std.', 60), snoozeBtn('morgen 9:00', tomorrow9))) : null,
     h('div', { class: 'col', style: 'gap:6px' }, h('div', { class: 'row' }, h('span', { class: 'muted small grow' }, 'Unteraufgaben'), aiBtn), subsBox,
       h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); const v = subInput.value.trim(); if (v) { subInput.value = ''; addSub(v); } } }, subInput, h('button', { class: 'icon-btn', type: 'submit', 'aria-label': 'Hinzufügen' }, icon('plus')))),
+    h('div', { class: 'field' }, 'Fokus-Timer' + (t.tracked_min ? ` · bisher ${fmtMin(t.tracked_min)} erfasst` : ''),
+      !t.done ? h('div', { class: 'row wrap' }, [15, 25, 50].map((m) => btn(m + ' min', 'sm', () => startFocus(t, m), 'play'))) : null),
     h('div', { class: 'muted small' }, `Erstellt ${fmtTs(t.created_at)}${t.created_by !== 'user' ? ' von Agent ' + t.created_by : ''}`),
-    btn('Aufgabe löschen', 'danger', () => deleteTodo(t), 'trash'));
+    h('div', { class: 'row wrap' }, btn('Als Vorlage', '', () => templateFromTodo(t), 'layers'), btn('Aufgabe löschen', 'danger', () => deleteTodo(t), 'trash')));
+}
+
+// ------------------------------------------------------------------ Mehrfachauswahl
+function startSelecting(id) {
+  state.selecting = true; state.picked = new Set(id ? [id] : []); state.selected = null;
+  document.body.classList.add('selecting'); renderTodos(); renderDetail();
+}
+function stopSelecting(redraw = true) {
+  state.selecting = false; state.picked = new Set();
+  document.body.classList.remove('selecting');
+  const bar = $('#bulkbar'); if (bar) bar.remove();
+  if (redraw) renderTodos();
+}
+function togglePick(id) { if (state.picked.has(id)) state.picked.delete(id); else state.picked.add(id); renderTodos(); }
+function choiceSheet(title, options, extra) {
+  const close = sheet(h('div', { class: 'col' }, h('h2', {}, title),
+    h('div', { class: 'col', style: 'gap:6px' }, options.map(([label, fn, cls]) => btn(label, cls || '', () => { close(); fn(); }))), extra || null));
+  return close;
+}
+function renderBulk() {
+  let bar = $('#bulkbar');
+  if (!state.selecting) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = h('div', { class: 'bulkbar glass', id: 'bulkbar', role: 'toolbar', 'aria-label': 'Auswahl bearbeiten' }); document.body.appendChild(bar); }
+  const ids = [...state.picked], n = ids.length;
+  const run = (body, msg) => guard(async () => {
+    const r = await api('/todos/bulk', { method: 'POST', body: { ids, ...body } });
+    state.todos = (await api('/todos')).todos; stopSelecting(); renderChrome();
+    if (body.action === 'delete') undoToast(`${r.count} Aufgabe${r.count === 1 ? '' : 'n'} gelöscht`, r.trash_id);
+    else toast(`${msg} (${r.count})`, 'ok');
+  })();
+  const at = (days, hour) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(hour, 0, 0, 0); return d.toISOString(); };
+  const nextMonday = () => { const d = new Date(); return at(((8 - d.getDay()) % 7) || 7, 9); };
+  const act = (ic, label, fn) => h('button', { class: 'bulk-btn', type: 'button', title: label, 'aria-label': label, disabled: !n, onclick: fn }, icon(ic), h('span', {}, label));
+  const dueInput = h('input', { type: 'datetime-local', 'aria-label': 'Datum und Uhrzeit' });
+  const tagInput = h('input', { type: 'text', placeholder: 'z. B. arbeit, dringend', 'aria-label': 'Tags' });
+  const tagList = () => tagInput.value.split(/[,\s]+/).map((x) => x.replace(/^#/, '').trim()).filter(Boolean);
+  clear(bar).append(
+    h('strong', { class: 'small bulk-count' }, String(n), h('span', { class: 'bulk-word' }, ' ausgewählt')),
+    h('button', { class: 'link-btn', type: 'button', onclick: () => { filteredTodos().forEach((t) => state.picked.add(t.id)); renderTodos(); } }, 'Alle'),
+    h('div', { class: 'grow' }),
+    act('check', 'Erledigt', () => run({ action: 'done' }, 'Erledigt')),
+    act('list', 'Liste', () => choiceSheet('In Liste verschieben', [['Keine Liste', () => run({ action: 'move', list_id: null }, 'Verschoben')],
+      ...state.lists.map((l) => [l.name, () => run({ action: 'move', list_id: l.id }, 'Verschoben')])])),
+    act('tag', 'Tags', () => { const close = sheet(h('div', { class: 'col' }, h('h2', {}, 'Tags'), tagInput, h('div', { class: 'row wrap' },
+      btn('Hinzufügen', 'primary', () => { if (tagList().length) { close(); run({ action: 'tag', tags: tagList() }, 'Tags ergänzt'); } }),
+      btn('Entfernen', '', () => { if (tagList().length) { close(); run({ action: 'untag', tags: tagList() }, 'Tags entfernt'); } })))); tagInput.focus(); }),
+    act('cal', 'Datum', () => choiceSheet('Fälligkeit setzen', [['Heute 18:00', () => run({ action: 'due', due_at: at(0, 18) }, 'Datum gesetzt')],
+      ['Morgen 9:00', () => run({ action: 'due', due_at: at(1, 9) }, 'Datum gesetzt')], ['Nächster Montag 9:00', () => run({ action: 'due', due_at: nextMonday() }, 'Datum gesetzt')],
+      ['Datum entfernen', () => run({ action: 'due', due_at: null }, 'Datum entfernt')]],
+      h('form', { class: 'row', onsubmit: (e) => { e.preventDefault(); if (!dueInput.value) return; document.querySelectorAll('.overlay').forEach((o) => o.remove()); run({ action: 'due', due_at: fromLocalInput(dueInput.value) }, 'Datum gesetzt'); } },
+        dueInput, h('button', { class: 'btn', type: 'submit' }, 'Setzen')))),
+    act('flag', 'Priorität', () => choiceSheet('Priorität', [3, 2, 1, 0].map((p) => [['Keine', 'Niedrig', 'Mittel', 'Hoch'][p], () => run({ action: 'priority', priority: p }, 'Priorität gesetzt')]))),
+    act('trash', 'Löschen', () => run({ action: 'delete' })),
+    h('button', { class: 'icon-btn', type: 'button', 'aria-label': 'Auswahl beenden', title: 'Fertig', onclick: () => stopSelecting() }, icon('x')));
+}
+function addHeadTools(view) {
+  const head = view.querySelector('.page-head'); if (!head) return;
+  const tools = h('div', { class: 'row', style: 'gap:0' });
+  [...head.children].slice(1).forEach((c) => tools.appendChild(c));
+  if (state.route !== 'done') tools.appendChild(h('button', { class: 'icon-btn', 'aria-label': 'Aus Vorlage anlegen', title: 'Aus Vorlage', onclick: templatePicker }, icon('layers')));
+  tools.appendChild(h('button', { class: 'icon-btn', 'aria-label': 'Mehrere auswählen', title: 'Mehrere auswählen', onclick: () => (state.selecting ? stopSelecting() : startSelecting()) }, icon('select')));
+  head.appendChild(tools);
+}
+
+// ------------------------------------------------------------------ Vorlagen
+function templateInfo(tp) {
+  const list = tp.list_id ? state.lists.find((l) => l.id === tp.list_id) : null;
+  return [tp.title !== tp.name ? `„${tp.title}“` : null, tp.subtasks.length ? `${tp.subtasks.length} Unteraufgabe${tp.subtasks.length === 1 ? '' : 'n'}` : null,
+    tp.due_days === null || tp.due_days === undefined ? null : (tp.due_days === 0 ? 'fällig am selben Tag' : `fällig nach ${tp.due_days} Tag${tp.due_days === 1 ? '' : 'en'}`) + (tp.due_time ? ' um ' + tp.due_time : ''),
+    list ? list.name : null, (tp.tags || []).map((g) => '#' + g).join(' ') || null].filter(Boolean).join(' · ');
+}
+const useTemplate = guard(async (tp, listId) => {
+  const t = await api(`/templates/${tp.id}/use`, { method: 'POST', body: { list_id: listId === undefined ? null : listId } });
+  state.todos = (await api('/todos')).todos; renderTodos(); renderChrome();
+  toast(`„${t.title}“ angelegt`, 'ok', { label: 'Öffnen', fn: () => { if (!isTaskRoute(state.route) || state.route === 'done') go('all'); setTimeout(() => select(t.id), 60); } });
+});
+const templatePicker = guard(async () => {
+  const { templates } = await api('/templates');
+  const close = sheet(h('div', { class: 'col' }, h('h2', {}, 'Aus Vorlage anlegen'),
+    templates.length ? h('div', { class: 'col', style: 'gap:6px' }, templates.map((tp) => h('button', { class: 'pick-row', type: 'button', onclick: () => { close(); useTemplate(tp, currentListId()); } },
+      icon('layers'), h('div', { class: 'grow' }, h('div', {}, tp.name), h('div', { class: 'small muted' }, templateInfo(tp) || 'Einfache Aufgabe')))))
+      : h('div', { class: 'muted small' }, 'Noch keine Vorlagen. Speichere eine Aufgabe als Vorlage (in den Details) oder lege eine neue an.'),
+    h('div', { class: 'row' }, btn('Vorlagen verwalten', 'sm', () => { close(); go('templates'); }), h('div', { class: 'grow' }), btn('Neue Vorlage', 'sm', () => { close(); templateSheet(); }, 'plus'))));
+});
+function templateSheet(tp = {}, onSaved) {
+  const name = h('input', { type: 'text', maxlength: 60, value: tp.name || '', placeholder: 'z. B. Urlaub packen', required: true });
+  const title = h('input', { type: 'text', maxlength: 300, value: tp.title || '', placeholder: 'Titel der Aufgabe', required: true });
+  const notes = h('textarea', { maxlength: 5000, placeholder: 'Notizen (optional)', style: 'min-height:70px' }); notes.value = tp.notes || '';
+  let prio = tp.priority || 0;
+  const tags = h('input', { type: 'text', value: (tp.tags || []).join(', '), placeholder: 'Tags, z. B. reise' });
+  const list = h('select', { 'aria-label': 'Liste' }, h('option', { value: '' }, 'Keine Liste'), state.lists.map((l) => h('option', { value: l.id, selected: l.id === tp.list_id }, l.name)));
+  const dueOpts = [['', 'Ohne Fälligkeit'], ['0', 'Am selben Tag'], ['1', 'Nach 1 Tag'], ['2', 'Nach 2 Tagen'], ['3', 'Nach 3 Tagen'], ['7', 'Nach 1 Woche'], ['14', 'Nach 2 Wochen'], ['30', 'Nach 30 Tagen']];
+  const cur = tp.due_days === null || tp.due_days === undefined ? '' : String(tp.due_days);
+  if (!dueOpts.some(([v]) => v === cur)) dueOpts.push([cur, `Nach ${cur} Tagen`]);
+  const due = h('select', { 'aria-label': 'Fälligkeit' }, dueOpts.map(([v, l]) => h('option', { value: v, selected: v === cur }, l)));
+  const time = h('input', { type: 'time', value: tp.due_time || '09:00', 'aria-label': 'Uhrzeit' });
+  const subs = h('textarea', { placeholder: 'Eine Unteraufgabe pro Zeile', style: 'min-height:110px' }); subs.value = (tp.subtasks || []).join('\n');
+  const close = sheet(h('form', { class: 'col', onsubmit: guard(async (e) => {
+    e.preventDefault();
+    const body = { name: name.value.trim(), title: title.value.trim(), notes: notes.value, priority: prio,
+      tags: tags.value.split(/[,\s]+/).map((x) => x.replace(/^#/, '').trim()).filter(Boolean), list_id: list.value ? Number(list.value) : null,
+      due_days: due.value === '' ? null : Number(due.value), due_time: due.value === '' ? null : time.value || null,
+      subtasks: subs.value.split('\n').map((x) => x.trim()).filter(Boolean).slice(0, 50) };
+    const saved = await api(tp.id ? '/templates/' + tp.id : '/templates', { method: tp.id ? 'PUT' : 'POST', body });
+    close(); toast('Vorlage gespeichert', 'ok'); if (onSaved) onSaved(saved); else if (state.route === 'templates') route();
+  }) }, h('h2', {}, tp.id ? 'Vorlage bearbeiten' : 'Neue Vorlage'),
+  h('label', { class: 'field' }, 'Name der Vorlage', name), h('label', { class: 'field' }, 'Aufgabe', title), notes,
+  h('div', { class: 'field' }, 'Priorität', prioSeg(prio, (p) => { prio = p; })),
+  h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'Fälligkeit', due), h('label', { class: 'field' }, 'Uhrzeit', time)),
+  h('div', { class: 'search-grid' }, h('label', { class: 'field' }, 'Liste', list), h('label', { class: 'field' }, 'Tags', tags)),
+  h('label', { class: 'field' }, 'Unteraufgaben', subs),
+  h('div', { class: 'row' }, h('div', { class: 'grow' }), btn('Abbrechen', '', () => close()), h('button', { class: 'btn primary', type: 'submit' }, 'Speichern'))));
+  name.focus();
+}
+function templateFromTodo(t) {
+  let days = null, time = null;
+  if (t.due_at) { const d = new Date(t.due_at); days = Math.max(0, Math.round((dayStart(d) - dayStart(new Date())) / 86400000)); time = `${pad(d.getHours())}:${pad(d.getMinutes())}`; }
+  templateSheet({ name: t.title.slice(0, 60), title: t.title, notes: t.notes, priority: t.priority, tags: t.tags, list_id: t.list_id, due_days: days, due_time: time,
+    subtasks: state.todos.filter((s) => s.parent_id === t.id).map((s) => s.title) }, () => toast('Vorlage gespeichert – „Aus Vorlage“ legt sie neu an', 'ok'));
+}
+function viewTemplates(view) {
+  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Vorlagen'), h('div', { class: 'muted small' }, 'Wiederkehrende Checklisten mit einem Klick anlegen')),
+    btn('Vorlage', 'sm primary', () => templateSheet(), 'plus')));
+  const box = h('div', { class: 'col' }); view.appendChild(box);
+  guard(async () => {
+    const { templates } = await api('/templates'); clear(box);
+    if (!templates.length) box.appendChild(h('div', { class: 'empty glass' }, icon('layers'), h('div', {}, 'Noch keine Vorlagen. Lege eine an – oder öffne eine Aufgabe und wähle „Als Vorlage“.')));
+    templates.forEach((tp) => box.appendChild(h('div', { class: 'glass card row', style: 'align-items:flex-start' },
+      h('div', { class: 'grow col', style: 'gap:4px' }, h('strong', {}, tp.name), h('div', { class: 'small muted' }, templateInfo(tp) || 'Einfache Aufgabe'),
+        tp.used_count ? h('div', { class: 'small muted' }, `${tp.used_count}× verwendet`) : null),
+      btn('Anlegen', 'sm primary', () => useTemplate(tp, tp.list_id), 'plus'),
+      h('button', { class: 'icon-btn', 'aria-label': 'Bearbeiten', onclick: () => templateSheet(tp) }, icon('more')),
+      h('button', { class: 'icon-btn', 'aria-label': 'Vorlage löschen', onclick: guard(async () => { if (!confirm(`Vorlage „${tp.name}“ löschen?`)) return; await api('/templates/' + tp.id, { method: 'DELETE' }); route(); }) }, icon('trash')))));
+  })();
+}
+
+// ------------------------------------------------------------------ Papierkorb
+function viewTrash(view) {
+  const box = h('div', { class: 'col' });
+  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Papierkorb'), h('div', { class: 'muted small', id: 'trash-sub' }, 'Gelöschte Aufgaben')),
+    btn('Leeren', 'sm danger', guard(async () => { if (!confirm('Papierkorb endgültig leeren? Das kann nicht rückgängig gemacht werden.')) return; await api('/trash', { method: 'DELETE' }); route(); }), 'trash')));
+  view.appendChild(box);
+  guard(async () => {
+    const { entries, keep_days } = await api('/trash'); clear(box);
+    $('#trash-sub').textContent = `Gelöschte Aufgaben bleiben ${keep_days} Tage hier und lassen sich vollständig wiederherstellen.`;
+    if (!entries.length) box.appendChild(h('div', { class: 'empty glass' }, icon('trash'), h('div', {}, 'Der Papierkorb ist leer.')));
+    entries.forEach((e) => box.appendChild(h('div', { class: 'glass card row', style: 'align-items:flex-start' },
+      h('div', { class: 'grow col', style: 'gap:4px' }, h('strong', {}, e.title),
+        h('div', { class: 'small muted' }, ['gelöscht ' + fmtTs(e.deleted_at), e.count > 1 ? `${e.count} Aufgaben` : null, e.subtasks ? `${e.subtasks} Unteraufgabe${e.subtasks === 1 ? '' : 'n'}` : null].filter(Boolean).join(' · ')),
+        e.count > 1 ? h('div', { class: 'small muted' }, e.items.map((i) => i.title).join(', ') + (e.count > e.items.length ? ' …' : '')) : null),
+      btn('Wiederherstellen', 'sm', () => restoreTrash(e.id), 'undo'),
+      h('button', { class: 'icon-btn', 'aria-label': 'Endgültig löschen', title: 'Endgültig löschen', onclick: guard(async () => { if (!confirm(`„${e.title}“ endgültig löschen?`)) return; await api('/trash/' + e.id, { method: 'DELETE' }); route(); }) }, icon('x')))));
+  })();
+}
+
+// ------------------------------------------------------------------ Fokus-Timer (läuft im Browser, Zeit wird an der Aufgabe erfasst)
+const FOCUS_KEY = 'focus';
+const readFocus = () => { try { return JSON.parse(localStorage.getItem(FOCUS_KEY) || 'null'); } catch (_) { return null; } };
+const writeFocus = (f) => { try { if (f) localStorage.setItem(FOCUS_KEY, JSON.stringify(f)); else localStorage.removeItem(FOCUS_KEY); } catch (_) { /* privat */ } };
+const fmtMin = (m) => (m >= 60 ? `${Math.floor(m / 60)} h${m % 60 ? ' ' + (m % 60) + ' min' : ''}` : `${m} min`);
+let focusTick = null;
+const focusLeft = (f) => (typeof f.paused === 'number' ? f.paused : Math.max(0, f.endAt - Date.now()));
+async function startFocus(t, minutes) {
+  if (readFocus()) await finishFocus(false);
+  writeFocus({ todoId: t.id, title: t.title, minutes, startedAt: new Date().toISOString(), endAt: Date.now() + minutes * 60000, paused: null });
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {});
+  renderFocus(); toast(`Fokus: ${minutes} min`, 'ok');
+}
+function renderFocus() {
+  clearInterval(focusTick); focusTick = null;
+  const f = state.user ? readFocus() : null;
+  let bar = $('#focusbar');
+  if (!f) { if (bar) bar.remove(); return; }
+  if (!bar) { bar = h('div', { class: 'focusbar glass', id: 'focusbar', role: 'timer', 'aria-label': 'Fokus-Timer' }); document.body.appendChild(bar); }
+  const paused = typeof f.paused === 'number';
+  const time = h('strong', { class: 'focus-time' });
+  const draw = () => {
+    const ms = focusLeft(f);
+    time.textContent = `${Math.floor(ms / 60000)}:${pad(Math.floor(ms / 1000) % 60)}`;
+    if (ms <= 0 && !paused) finishFocus(true);
+  };
+  clear(bar).append(icon('timer'),
+    h('button', { class: 'grow focus-title', type: 'button', title: 'Aufgabe öffnen', onclick: () => { if (!isTaskRoute(state.route) || state.route === 'done') go('all'); setTimeout(() => select(f.todoId), 60); } }, f.title),
+    time,
+    h('button', { class: 'icon-btn', 'aria-label': paused ? 'Weiter' : 'Pause', onclick: () => { if (paused) { f.endAt = Date.now() + f.paused; f.paused = null; } else f.paused = focusLeft(f); writeFocus(f); renderFocus(); } }, icon(paused ? 'play' : 'pause')),
+    h('button', { class: 'icon-btn', 'aria-label': 'Beenden und Zeit erfassen', title: 'Beenden', onclick: () => finishFocus(false) }, icon('stop')));
+  draw();
+  if (!paused) focusTick = setInterval(draw, 1000);
+}
+async function finishFocus(completed) {
+  const f = readFocus(); if (!f) return;
+  writeFocus(null); renderFocus();
+  const spent = Math.min(600, completed ? f.minutes : Math.round((f.minutes * 60000 - focusLeft(f)) / 60000));
+  if (spent >= 1) {
+    try {
+      const u = await api(`/todos/${f.todoId}/time`, { method: 'POST', body: { minutes: spent, started_at: f.startedAt } });
+      const t = state.todos.find((x) => x.id === f.todoId); if (t) Object.assign(t, u);
+    } catch (_) { /* Aufgabe gelöscht o. ä. */ }
+  }
+  if (completed) {
+    toast(`Fokus-Zeit vorbei: ${f.title}`, 'ok');
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        const reg = navigator.serviceWorker && navigator.serviceWorker.controller ? await navigator.serviceWorker.ready : null;
+        if (reg) reg.showNotification('Fokus-Zeit vorbei', { body: f.title, tag: 'focus' }); else new Notification('Fokus-Zeit vorbei', { body: f.title });
+      }
+    } catch (_) { /* nicht unterstützt */ }
+  } else if (spent >= 1) toast(`${fmtMin(spent)} erfasst`, 'ok');
+}
+
+// ------------------------------------------------------------------ Statistik
+function barChart(values, labels, { fmt = String, highlight = -1, aria = '' } = {}) {
+  const max = Math.max(1, ...values);
+  const top = values.indexOf(Math.max(...values));
+  const chart = h('div', { class: 'bars', role: 'img', 'aria-label': aria });
+  values.forEach((v, i) => {
+    const tip = `${labels[i]}: ${fmt(v)}`;
+    const bar = h('div', { class: 'bar' + (i === highlight ? ' hi' : ''), title: tip });
+    bar.style.height = (v ? Math.max(3, Math.round((100 * v) / max)) : 0) + '%';
+    const showVal = v && (i === highlight || i === top);
+    chart.appendChild(h('div', { class: 'bar-col', tabindex: 0, 'aria-label': tip, 'data-tip': tip },
+      h('div', { class: 'bar-track' }, showVal ? h('span', { class: 'bar-val' }, fmt(v)) : null, bar), h('span', { class: 'bar-label' }, labels[i])));
+  });
+  return chart;
+}
+function dataTable(head, rows) {
+  return h('details', { class: 'small' }, h('summary', { class: 'muted' }, 'Als Tabelle'),
+    h('table', { class: 'data-table' }, h('thead', {}, h('tr', {}, head.map((x) => h('th', {}, x)))), h('tbody', {}, rows.map((r) => h('tr', {}, r.map((c) => h('td', {}, c)))))));
+}
+function viewStats(view) {
+  view.appendChild(h('div', { class: 'page-head' }, h('div', {}, h('h1', {}, 'Statistik'), h('div', { class: 'muted small' }, 'Deine letzten 8 Wochen'))));
+  const box = h('div', { class: 'col' }); view.appendChild(box);
+  box.appendChild(h('div', { class: 'glass card row' }, h('div', { class: 'spinner' }), h('span', { class: 'muted' }, 'Wird berechnet …')));
+  guard(async () => {
+    const s = await api('/stats'); clear(box);
+    const diff = s.week_done - s.last_week_done;
+    const tile = (label, value, sub, cls) => h('div', { class: 'glass tile' }, h('div', { class: 'small muted' }, label), h('div', { class: 'tile-val' }, value), h('div', { class: 'small ' + (cls || 'muted') }, sub));
+    box.appendChild(h('div', { class: 'tiles' },
+      tile('Diese Woche erledigt', s.week_done, diff ? `${diff > 0 ? '+' : '−'}${Math.abs(diff)} zur Vorwoche` : 'wie in der Vorwoche'),
+      tile('Serie', s.streak, s.streak === 1 ? 'Tag mit Erledigtem' : 'Tage in Folge'),
+      tile('Fokus diese Woche', s.week_focus_min ? fmtMin(s.week_focus_min) : '–', s.week_focus_min ? 'mit dem Fokus-Timer' : 'Timer in den Aufgaben-Details'),
+      tile('Offen', s.open, s.overdue ? `${s.overdue} überfällig` : 'nichts überfällig', s.overdue ? 'danger-text' : 'muted')));
+    const wl = s.weeks.map((w) => { const d = new Date(w.start + 'T00:00:00'); return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.`; });
+    const last = s.weeks.length - 1;
+    box.appendChild(h('div', { class: 'glass card col' }, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Erledigt pro Woche'), h('span', { class: 'small muted' }, 'Woche ab')),
+      barChart(s.weeks.map((w) => w.done), wl, { highlight: last, aria: 'Erledigte Aufgaben pro Woche, letzte 8 Wochen', fmt: (v) => String(v) }),
+      dataTable(['Woche ab', 'Erledigt', 'Fokus'], s.weeks.map((w, i) => [wl[i], String(w.done), fmtMin(w.focus_min)]))));
+    if (s.weeks.some((w) => w.focus_min)) {
+      box.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'Fokuszeit pro Woche'),
+        barChart(s.weeks.map((w) => w.focus_min), wl, { highlight: last, aria: 'Fokuszeit pro Woche', fmt: (v) => fmtMin(v) })));
+    }
+    const wd = [1, 2, 3, 4, 5, 6, 0].map((_, i) => s.weekday[i]);
+    box.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'Nach Wochentag'),
+      barChart(wd, ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'], { aria: 'Erledigte Aufgaben nach Wochentag', fmt: (v) => String(v) })));
+    if (s.top_tags.length) {
+      const max = Math.max(...s.top_tags.map((t) => t.count));
+      box.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'Häufigste Tags (erledigt)'),
+        h('div', { class: 'col', style: 'gap:8px' }, s.top_tags.map((t) => { const b = h('i'); b.style.width = Math.round((100 * t.count) / max) + '%';
+          return h('button', { type: 'button', class: 'hbar', onclick: () => go('tag/' + encodeURIComponent(t.name)) }, h('span', { class: 'hbar-name' }, '#' + t.name), h('span', { class: 'hbar-track' }, b), h('span', { class: 'hbar-val' }, t.count)); }))));
+    }
+    if (s.longest_overdue.length) {
+      box.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'Dauerbrenner'), h('div', { class: 'small muted' }, 'Am längsten überfällig – erledigen, verschieben oder loslassen.'),
+        h('div', { class: 'col', style: 'gap:2px' }, s.longest_overdue.map((t) => h('button', { type: 'button', class: 'pick-row', onclick: () => { go('all'); setTimeout(() => select(t.id), 60); } },
+          h('span', { class: 'grow' }, t.title), h('span', { class: 'chip danger' }, icon('clock'), fmtDue(t.due_at)))))));
+    }
+    if (s.avg_days_to_done !== null) box.appendChild(h('div', { class: 'small muted', style: 'text-align:center' }, `Im Schnitt nach ${String(s.avg_days_to_done).replace('.', ',')} Tagen erledigt (letzte 30 Tage)`));
+    const sw = h('button', { class: 'switch' + (s.review_enabled ? ' on' : ''), role: 'switch', 'aria-checked': String(s.review_enabled), 'aria-label': 'Wochenrückblick' });
+    sw.addEventListener('click', guard(async () => { const r = await api('/stats/review', { method: 'PUT', body: { enabled: !sw.classList.contains('on') } }); sw.classList.toggle('on', r.enabled); sw.setAttribute('aria-checked', String(r.enabled)); toast(r.enabled ? 'Wochenrückblick sonntags um 18 Uhr' : 'Wochenrückblick aus', 'ok'); }));
+    box.appendChild(h('div', { class: 'glass card col' }, h('div', { class: 'row' }, h('h3', { class: 'grow' }, 'Wochenrückblick'), sw),
+      h('div', { class: 'small muted' }, 'Jeden Sonntag um 18 Uhr eine Benachrichtigung. So sähe sie gerade aus:'),
+      h('div', { class: 'preview-note' }, h('strong', {}, s.review_preview.title), h('div', { class: 'small muted' }, s.review_preview.body))));
+  })();
 }
 
 // ------------------------------------------------------------------ Spracheingabe (Whisper)
@@ -1210,12 +1554,16 @@ function viewSettings(view) {
   const tseg = h('div', { class: 'seg' });
   const drawT = (cur) => { clear(tseg); [['auto', 'Auto'], ['light', 'Hell'], ['dark', 'Dunkel']].forEach(([k, l]) => tseg.appendChild(h('button', { type: 'button', class: cur === k ? 'on' : '', onclick: () => { localStorage.setItem('theme', k); applyTheme(); drawT(k); } }, l))); };
   drawT(theme);
+  view.appendChild(h('div', { class: 'glass card col mobile-only' }, h('h3', {}, 'Bereiche'), h('div', { class: 'row wrap' },
+    btn('Kalender', 'sm', () => go('calendar'), 'cal'), btn('Statistik', 'sm', () => go('stats'), 'chart'),
+    btn('Vorlagen', 'sm', () => go('templates'), 'layers'), btn('Papierkorb', 'sm', () => go('trash'), 'trash'))));
   view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'Design'), tseg));
   // Ollama
   const model = h('select', { 'aria-label': 'Ollama-Modell' }, h('option', { value: state.settings.ollama_model }, state.settings.ollama_model));
-  api('/ai/models').then(({ models }) => { clear(model); const all = new Set([state.settings.ollama_model, ...models]); all.forEach((m) => model.appendChild(h('option', { value: m, selected: m === state.settings.ollama_model }, m))); }).catch(() => toast('Ollama-Modelle konnten nicht geladen werden.', 'err'));
+  const modelHint = h('div', { class: 'small muted hidden' }, 'Ollama ist gerade nicht erreichbar – die Modellliste fehlt, KI-Funktionen melden sich mit einem Fehler.');
+  api('/ai/models').then(({ models }) => { clear(model); const all = new Set([state.settings.ollama_model, ...models]); all.forEach((m) => model.appendChild(h('option', { value: m, selected: m === state.settings.ollama_model }, m))); }).catch(() => modelHint.classList.remove('hidden'));
   model.addEventListener('change', guard(async () => { state.settings = { ...state.settings, ...(await api('/settings', { method: 'PUT', body: { ollama_model: model.value } })) }; toast('Modell gespeichert', 'ok'); }));
-  view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model));
+  view.appendChild(h('div', { class: 'glass card col' }, h('h3', {}, 'KI-Modell (Ollama)'), model, modelHint));
   // Push
   view.appendChild(pushCard());
   const secBox = h('div', { class: 'glass card col' });
@@ -1527,7 +1875,8 @@ window.addEventListener('resize', () => { if (state.user && state.selected) rend
 document.addEventListener('keydown', (e) => {
   if (!state.user) return;
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
-  if (e.key === 'Escape' && state.selected) { state.selected = null; renderTodos(); renderDetail(); }
+  if (e.key === 'Escape' && state.selecting) stopSelecting();
+  else if (e.key === 'Escape' && state.selected) { state.selected = null; renderTodos(); renderDetail(); }
   if (typing) return;
   if (e.key === '/') { e.preventDefault(); go('search'); }
   if (e.key === 'n') { const i = $('#quick-input'); if (i) { e.preventDefault(); i.focus(); } }

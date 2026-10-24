@@ -140,7 +140,12 @@ def test_attachment_size_limit_and_cleanup(two, monkeypatch):
         stored = conn.execute("SELECT stored_name FROM attachments WHERE id = ?", (a["id"],)).fetchone()["stored_name"]
     path = config.DATA_DIR / "attachments" / stored
     assert path.exists()
-    c.delete(f"/api/todos/{t['id']}")  # Aufgabe löschen entfernt auch die Datei
+    trash_id = c.delete(f"/api/todos/{t['id']}").json()["trash_id"]  # Papierkorb: Datei bleibt (Rückgängig)
+    assert path.exists()
+    assert c.post(f"/api/trash/{trash_id}/restore").json() == {"restored": 1}
+    assert [x["id"] for x in c.get(f"/api/todos/{t['id']}/attachments").json()["attachments"]] == [a["id"]]
+    trash_id = c.delete(f"/api/todos/{t['id']}").json()["trash_id"]
+    assert c.delete(f"/api/trash/{trash_id}").status_code == 204  # endgültig löschen entfernt die Datei
     assert not path.exists()
 
 

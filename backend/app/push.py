@@ -87,10 +87,11 @@ def notify_threadsafe(user_ids: list[int], title: str, body: str, url: str = "/"
 
 
 async def reminder_loop() -> None:
-    from . import assistant, backup, mailin
+    from . import assistant, backup, mailin, stats, trash
 
     while True:
-        for job in (_check_due, assistant.send_daily_summaries, mailin.poll_due_accounts, backup.daily_backup):
+        for job in (_check_due, assistant.send_daily_summaries, stats.send_weekly_reviews, mailin.poll_due_accounts,
+                    backup.daily_backup, trash.daily_purge):
             try:
                 await asyncio.to_thread(job)
             except Exception as exc:

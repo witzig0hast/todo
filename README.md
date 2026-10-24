@@ -14,6 +14,16 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
   **mehrere Erinnerungen** pro Aufgabe, **Schlummern** (10 Min. bis morgen früh), **Suche**, **gespeicherte Filter**,
   **Kalenderansicht**, **Anhänge** (Bilder, PDF, Text, bis 10 MB), **Standort-Erinnerungen** (Android-App),
   Wisch-Gesten (rechts = erledigt, links = löschen), Tastaturkürzel (`n` oder `/` = neue Aufgabe, `Esc` = Details schließen).
+- **Schnelleingabe ohne KI:** „morgen 15 Uhr Zahnarzt #privat !!“, „jeden Montag Müll @haushalt“, „in 30 min Pizza“ – Datum,
+  Uhrzeit, Priorität (`!`, `!!`, `!!!`, `!hoch`), Liste (`@name`), Tags und Wiederholung werden sofort erkannt und vor dem
+  Speichern als Vorschau angezeigt („Nur Text“ schaltet die Erkennung ab).
+- **Papierkorb & Rückgängig:** Gelöschtes (auch mehrere auf einmal oder „Aufräumen“) lässt sich direkt per „Rückgängig“ oder
+  30 Tage lang im Papierkorb wiederherstellen – inkl. Unteraufgaben, Anhängen und erfasster Zeit.
+- **Mehrfachauswahl:** Auswahl-Knopf oder lange auf eine Aufgabe drücken → erledigen, verschieben, taggen, Datum/Priorität setzen, löschen.
+- **Vorlagen:** Checklisten wie „Urlaub packen“ mit Unteraufgaben und relativer Fälligkeit („nach 2 Tagen um 18:00“); jede
+  Aufgabe lässt sich in den Details „Als Vorlage“ speichern.
+- **Fokus-Timer & Statistik:** 15/25/50-Minuten-Timer an einer Aufgabe (Zeit wird erfasst), Statistik mit erledigt pro Woche
+  und Wochentag, Serie, Fokuszeit, Dauerbrennern – optional als **Wochenrückblick** sonntags um 18 Uhr.
 - **Geteilte Listen:** Listen per Benutzername mit anderen freigegebenen Benutzern teilen; Änderungen erscheinen live bei allen.
 - **Kalender-Abo (ICS):** geheimer Link für Handy-, Thunderbird-, Outlook- oder Nextcloud-Kalender (jederzeit neu erzeugbar/widerrufbar).
 - **Ollama:** Freitext → Aufgabe(n) („morgen 15 Uhr Zahnarzt anrufen und Milch kaufen“ ergibt zwei Aufgaben),
