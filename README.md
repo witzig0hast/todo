@@ -66,7 +66,8 @@ Selbst gehostete, sichere To-do-App als einzelner Docker-Container – mit **Oll
   Web-Push mit VAPID (Schlüssel werden beim ersten Start in `/data` erzeugt).
 - **Android-App** (`android/`): Nachrichten an einzelne Geräte, Aktionen und Antworten direkt in der Benachrichtigung,
   **Ruhezeiten pro Gerät** (dringende Nachrichten kommen trotzdem), **App-Sperre per Fingerabdruck**, Standort-Erinnerungen,
-  „Teilen mit Todo“ aus anderen Apps. Details: [`android/README.md`](android/README.md).
+  „Teilen mit Todo“ aus anderen Apps, **Homescreen-Widget**, **App-Shortcuts**, **Schnelleinstellungs-Kachel** und
+  **Updates über den eigenen Server**. Details: [`android/README.md`](android/README.md).
 - **Sicherheit fürs Konto:** **Zwei-Faktor-Anmeldung (TOTP)** mit QR-Code und 10 Wiederherstellungscodes, **Passkeys**
   (Fingerabdruck/Face ID/Sicherheitsschlüssel, Anmeldung ohne Passwort), Liste aller **angemeldeten Geräte** mit Abmelden
   einzeln oder „alle anderen“.

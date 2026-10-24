@@ -12,6 +12,11 @@ mit einem eigenen Token; du kannst Nachrichten gezielt an ein Gerät oder an all
   (`device.notify`, Scope `notify`).
 - **Offline-Zeiten:** Der Server hält Nachrichten pro Gerät vor und liefert sie beim nächsten Verbinden nach (bis 30 Tage,
   bestätigte nach 7 Tagen gelöscht).
+- **Homescreen-Widget „Todo – Heute“:** heute fällige und überfällige Aufgaben abhaken, mit „+“ neue anlegen (Schnelleingabe
+  mit Datums-/Tag-Erkennung, optional per Spracheingabe des Handys). Mit aktiver App-Sperre zeigt das Widget nur Zahlen.
+- **App-Shortcuts** (lange aufs App-Symbol drücken): Neue Aufgabe, Diktieren (öffnet die App mit Whisper-Aufnahme), Heute, Suchen.
+- **Schnelleinstellungs-Kachel „Neue Aufgabe“:** Statusleiste herunterziehen → Bearbeiten → Kachel hinzufügen.
+- **Updates über deinen Server:** Neue Versionen meldet die App selbst („Update verfügbar“) und installiert sie nach Bestätigung.
 - Mikrofon für die Spracheingabe (Whisper), SSO über Authentik/andere Anbieter (läuft im selben WebView),
   Start nach Neustart, Zurück-Taste, Offline-Seite mit „Erneut versuchen“ / „Server ändern“.
 
@@ -36,6 +41,24 @@ Deinstallation. Einmalig:
 
 Die vier Werte als **Repository-Secrets** anlegen (`ANDROID_KEYSTORE_BASE64`, `ANDROID_KEYSTORE_PASSWORD`,
 `ANDROID_KEY_ALIAS`, `ANDROID_KEY_PASSWORD`). Die Keystore-Datei sicher aufbewahren (nicht einchecken).
+
+## Updates verteilen
+
+Updates lassen sich nur installieren, wenn **alle Versionen mit demselben Schlüssel signiert** sind – also zuerst den
+dauerhaften Signierschlüssel einrichten (oben). Dann gibt es zwei Wege:
+
+1. **Von Hand:** APK aus GitHub Actions herunterladen und in der Web-App unter *Admin → Android-App → APK hochladen*
+   bereitstellen (Version wird aus dem Dateinamen `todo-1.0.N.apk` gelesen).
+2. **Automatisch aus der CI:** In der Web-App als Admin ein API-Token mit Recht „schreiben“ erzeugen
+   (*Einstellungen → Integrationen & API-Tokens*) und zwei weitere Repository-Secrets anlegen:
+   `TODO_SERVER_URL` (z. B. `https://todo.example.com`) und `TODO_UPLOAD_TOKEN` (das Token). Jeder Build lädt die APK dann
+   selbst hoch.
+
+Die App fragt höchstens alle 6 Stunden nach, zeigt eine Benachrichtigung und – in *Einstellungen → Geräte* – den Knopf
+„Update installieren“. Beim ersten Mal fragt Android, ob Todo Apps installieren darf. Die Datei wird vor der Installation
+per SHA-256 geprüft. nginx: der Block für `/api/app/android` aus [`deploy/nginx.conf`](../deploy/nginx.conf) erlaubt größere Uploads.
+
+Jeder CI-Lauf zeigt in der Zusammenfassung (und im Release) den SHA-256-Fingerabdruck des Signatur-Zertifikats.
 
 ## Lokal bauen
 
